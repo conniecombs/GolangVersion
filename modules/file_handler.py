@@ -1,17 +1,26 @@
+"""File handling utilities for image processing and validation."""
+
 import os
 import io
 import base64
-from PIL import Image, ImageTk
+from typing import List, Optional, Union
+from PIL import Image
 from modules.sidecar import SidecarBridge
 
-VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+VALID_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp")
 
-def scan_inputs(inputs):
+
+def scan_inputs(inputs: Union[str, List[str]]) -> List[str]:
+    """Scan inputs (files or folders) and return valid image paths.
+
+    Args:
+        inputs: Single file/folder path or list of paths
+
+    Returns:
+        Sorted list of unique valid image file paths
     """
-    Scans a list of inputs (files or folders) and returns valid image paths.
-    """
-    media_files = []
-    
+    media_files: List[str] = []
+
     if isinstance(inputs, str):
         inputs = [inputs]
     if not inputs:
@@ -23,34 +32,44 @@ def scan_inputs(inputs):
                 media_files.append(item)
         elif os.path.isdir(item):
             media_files.extend(get_files_from_directory(item))
-            
+
     return sorted(list(set(media_files)))
 
-def get_files_from_directory(directory):
-    files = []
+
+def get_files_from_directory(directory: str) -> List[str]:
+    """Recursively get all valid image files from a directory.
+
+    Args:
+        directory: Path to directory to scan
+
+    Returns:
+        List of valid image file paths
+    """
+    files: List[str] = []
     try:
         for root, _, filenames in os.walk(directory):
             for filename in filenames:
                 if filename.lower().endswith(VALID_EXTENSIONS):
                     files.append(os.path.join(root, filename))
-    except Exception as e:
+    except OSError as e:
         print(f"Error scanning directory: {e}")
     return files
 
-def generate_thumbnail(file_path):
+
+def generate_thumbnail(file_path: str) -> Optional[Image.Image]:
+    """Generate thumbnail using the Go sidecar process.
+
+    Args:
+        file_path: Path to image file
+
+    Returns:
+        PIL Image object if successful, None otherwise
     """
-    Offloads image resizing to the Go sidecar.
-    Returns a PIL Image object (not ImageTk) for use in CustomTkinter.
-    """
-    payload = {
-        "action": "generate_thumb",
-        "files": [file_path],
-        "config": {"width": "100"}
-    }
-    
+    payload = {"action": "generate_thumb", "files": [file_path], "config": {"width": "100"}}
+
     bridge = SidecarBridge.get()
     resp = bridge.request_sync(payload, timeout=2)
-    
+
     if resp.get("status") == "success" and resp.get("data"):
         try:
             image_data = base64.b64decode(resp["data"])

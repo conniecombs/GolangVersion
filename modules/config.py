@@ -34,10 +34,32 @@ IMAGEBAM_SESSION_URL = "https://www.imagebam.com/upload/session"
 IMAGEBAM_UPLOAD_URL = "https://www.imagebam.com/upload"
 IMAGEBAM_GALLERIES_URL = "https://www.imagebam.com/my/galleries"
 
-SUPPORTED_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+SUPPORTED_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp")
 SETTINGS_FILE = "user_settings.json"
 CRASH_LOG_FILE = "crash_log.log"
 UI_THUMB_SIZE = (40, 40)
+
+# Upload Configuration
+DEFAULT_THREAD_COUNT = 5
+MIN_THREAD_COUNT = 1
+MAX_THREAD_COUNT = 20
+DEFAULT_UPLOAD_TIMEOUT = 120  # seconds
+
+# Thread Pool Configuration
+THUMBNAIL_WORKERS = 4
+GO_WORKER_POOL_SIZE = 8
+
+# Auto-Post Configuration
+POST_COOLDOWN_SECONDS = 1.5
+
+# File Size Limits (in bytes)
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_FILENAME_LENGTH = 255
+
+# UI Update Intervals
+UI_UPDATE_INTERVAL_MS = 10
+UI_QUEUE_BATCH_SIZE = 10
+PROGRESS_UPDATE_BATCH_SIZE = 50
 
 # Keyring Services
 KEYRING_SERVICE_API = "ImageUploader:imx_api_key"
@@ -58,11 +80,13 @@ if sys.stderr:
     logger.add(sys.stderr, level="INFO")
 logger.add(CRASH_LOG_FILE, rotation="1 MB", retention="10 days", level="DEBUG", backtrace=True, diagnose=True)
 
+
 def natural_sort_key(s: str):
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
+
 
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
+    """Get absolute path to resource, works for dev and for PyInstaller"""
     try:
         base_path = sys._MEIPASS
     except Exception:

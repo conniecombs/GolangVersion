@@ -2,6 +2,7 @@
 from .plugins.base import ImageHostPlugin
 from .plugins import imx, turbo, pixhost, vipr, imagebam
 
+
 class PluginManager:
     def __init__(self):
         self._plugins = {}
@@ -9,14 +10,8 @@ class PluginManager:
 
     def load_plugins(self):
         # Register available plugins here
-        classes = [
-            imx.ImxPlugin,
-            pixhost.PixhostPlugin,
-            turbo.TurboPlugin,
-            vipr.ViprPlugin,
-            imagebam.ImageBamPlugin
-        ]
-        
+        classes = [imx.ImxPlugin, pixhost.PixhostPlugin, turbo.TurboPlugin, vipr.ViprPlugin, imagebam.ImageBamPlugin]
+
         for cls in classes:
             instance = cls()
             self._plugins[instance.id] = instance
