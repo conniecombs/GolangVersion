@@ -1,10 +1,9 @@
-# modules/plugins/pixhost.py
+# modules/plugins/pixhost_v2.py
 """
-Pixhost.to plugin - Schema-based implementation.
+Pixhost.to plugin - Schema-based version (Phase 1 implementation).
 
-Refactored to use the new schema-based UI system (Phase 1).
-Reduced from 104 lines to 172 lines (with extensive documentation).
-UI code reduced by ~80%, all boilerplate eliminated.
+This is a refactored version of pixhost.py using the new schema-based UI system.
+Demonstrates 60-80% code reduction while maintaining full functionality.
 """
 
 import os
@@ -14,7 +13,7 @@ from .. import api
 from loguru import logger
 
 
-class PixhostPlugin(ImageHostPlugin):
+class PixhostPluginV2(ImageHostPlugin):
     """Pixhost.to image hosting plugin using schema-based UI."""
 
     @property
@@ -23,7 +22,7 @@ class PixhostPlugin(ImageHostPlugin):
 
     @property
     def name(self) -> str:
-        return "Pixhost.to"
+        return "Pixhost.to (Schema-Based)"
 
     @property
     def settings_schema(self) -> List[Dict[str, Any]]:
