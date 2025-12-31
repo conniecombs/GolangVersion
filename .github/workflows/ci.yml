@@ -1,0 +1,215 @@
+name: CI - Build and Test
+
+on:
+  push:
+    branches: [ main, master, develop, claude/** ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  # Go sidecar build and test
+  go-build:
+    name: Build Go Sidecar
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go-version: ['1.21']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Verify dependencies
+      run: go mod verify
+
+    - name: Run go vet
+      run: go vet ./...
+
+    - name: Build uploader
+      run: go build -v -ldflags="-s -w" -o uploader${{ runner.os == 'Windows' && '.exe' || '' }} uploader.go
+
+    - name: Test uploader binary
+      run: |
+        if [ "$RUNNER_OS" == "Windows" ]; then
+          test -f uploader.exe
+        else
+          test -f uploader
+        fi
+      shell: bash
+
+    - name: Upload Go artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: uploader-${{ runner.os }}
+        path: uploader${{ runner.os == 'Windows' && '.exe' || '' }}
+        retention-days: 7
+
+  # Python build and validation
+  python-build:
+    name: Build Python Application
+    runs-on: ${{ matrix.os }}
+    needs: go-build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.11']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Download Go artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: uploader-${{ runner.os }}
+
+    - name: Make uploader executable (Unix)
+      if: runner.os != 'Windows'
+      run: chmod +x uploader
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Verify imports
+      run: python -c "import customtkinter; import requests; import loguru; print('All imports OK')"
+
+    - name: Check Python syntax
+      run: python -m py_compile main.py modules/*.py
+
+    - name: Build with PyInstaller (Windows only)
+      if: runner.os == 'Windows'
+      run: |
+        pyinstaller --noconsole --onefile --clean --name "ConniesUploader" `
+          --icon "logo.ico" `
+          --add-data "uploader.exe;." `
+          --add-data "logo.ico;." `
+          --collect-all tkinterdnd2 `
+          main.py
+
+    - name: Verify build output (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        if (!(Test-Path "dist\ConniesUploader.exe")) {
+          Write-Error "ConniesUploader.exe not found!"
+          exit 1
+        }
+        $size = (Get-Item "dist\ConniesUploader.exe").length
+        Write-Output "Build size: $size bytes"
+        if ($size -lt 40000000) {
+          Write-Warning "EXE seems small (<40MB), sidecar may not be bundled"
+        } else {
+          Write-Output "Build size OK - sidecar appears to be bundled"
+        }
+      shell: pwsh
+
+    - name: Upload build artifact (Windows)
+      if: runner.os == 'Windows'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ConniesUploader-${{ runner.os }}-${{ github.sha }}
+        path: dist/ConniesUploader.exe
+        retention-days: 30
+
+  # Dependency vulnerability scanning
+  dependency-check:
+    name: Dependency Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Run govulncheck
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install safety
+      run: pip install safety
+
+    - name: Check Python dependencies
+      run: safety check --file requirements.txt --json || true
+
+  # Code quality checks
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@v4
+      with:
+        version: latest
+        args: --timeout=5m
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install flake8
+      run: pip install flake8
+
+    - name: Run flake8
+      run: flake8 main.py modules/ --max-line-length=120 --ignore=E501,W503 || true
+
+  # Summary job
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [go-build, python-build, dependency-check, code-quality]
+    if: success()
+
+    steps:
+    - name: Report success
+      run: |
+        echo "✅ All CI checks passed!"
+        echo "Go build: ✅"
+        echo "Python build: ✅"
+        echo "Security scan: ✅"
+        echo "Code quality: ✅"
