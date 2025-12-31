@@ -1,8 +1,9 @@
 # modules/plugins/imagebam.py
 """
-ImageBam.com plugin - Schema-based implementation.
+ImageBam.com plugin - Schema-based implementation with Go sidecar uploads.
 
-Python-based upload plugin with session management and CSRF token handling.
+Go-based upload plugin (upload handled by Go sidecar).
+Python side manages UI and configuration validation.
 """
 
 import os
@@ -32,7 +33,7 @@ class ImageBamPlugin(ImageHostPlugin):
             "author": "Connie's Uploader Team",
             "description": "Upload images to ImageBam.com with optional authentication and CSRF-protected uploads",
             "website": "https://imagebam.com",
-            "implementation": "python",
+            "implementation": "go",
             "features": {
                 "galleries": True,
                 "covers": False,
@@ -91,27 +92,8 @@ class ImageBamPlugin(ImageHostPlugin):
     def initialize_session(
         self, config: Dict[str, Any], creds: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Initialize upload session for ImageBam.
-
-        Handles login and CSRF token acquisition.
-        """
-        # Create context with client (using helper)
-        context = helpers.create_upload_context(api, csrf=None, cookies=None)
-        client = helpers.get_client_from_context(context)
-
-        user = creds.get("imagebam_user")
-        pwd = creds.get("imagebam_pass")
-        if user and pwd:
-            api.imagebam_login(user, pwd, client=client)
-
-        token, cookies = api.init_imagebam_session(client)
-        if token:
-            context["csrf"] = token
-            context["cookies"] = cookies
-        else:
-            logger.error("Failed to get ImageBam CSRF token")
-        return context
+        """Stub - Go sidecar handles session initialization."""
+        return {}
 
     def prepare_group(
         self, group, config: Dict[str, Any], context: Dict[str, Any], creds: Dict[str, Any]
@@ -146,43 +128,5 @@ class ImageBamPlugin(ImageHostPlugin):
     def upload_file(
         self, file_path: str, group, config: Dict[str, Any], context: Dict[str, Any], progress_callback
     ):
-        """
-        Upload a single file to ImageBam.
-
-        Args:
-            file_path: Path to image file
-            group: Group object containing files
-            config: Plugin configuration from UI
-            context: Session context from initialize_session
-            progress_callback: Function to report upload progress
-
-        Returns:
-            Tuple of (viewer_url, thumb_url)
-        """
-        # Get client from context (using helper)
-        client = helpers.get_client_from_context(context)
-        token = getattr(group, "ib_upload_token", None)
-        if not token:
-            raise ValueError("Upload skipped: No ImageBam Upload Token")
-
-        # Create uploader (using helper for progress callback)
-        uploader = api.ImageBamUploader(
-            file_path,
-            os.path.basename(file_path),
-            helpers.create_progress_callback(progress_callback),
-            config["content_type"],
-            config["thumbnail_size"],
-            upload_token=token,
-            csrf_token=context["csrf"],
-            session_cookies=context["cookies"],
-            client=client,
-        )
-
-        try:
-            # Perform upload (using helpers)
-            url, data, headers = uploader.get_request_params()
-            headers = helpers.prepare_upload_headers(headers, data)
-            response = helpers.execute_upload(client, url, headers, data, timeout=300)
-            return uploader.parse_response(response)
-        finally:
-            uploader.close()
+        """Stub - Go sidecar handles file uploads."""
+        pass

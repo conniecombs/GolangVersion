@@ -1,8 +1,9 @@
 # modules/plugins/turbo.py
 """
-TurboImageHost plugin - Schema-based implementation.
+TurboImageHost plugin - Schema-based implementation with Go sidecar uploads.
 
-Python-based upload plugin with optional login and endpoint configuration.
+Go-based upload plugin (upload handled by Go sidecar).
+Python side manages UI, configuration validation, and optional authentication.
 """
 
 import os
@@ -32,7 +33,7 @@ class TurboPlugin(ImageHostPlugin):
             "author": "Connie's Uploader Team",
             "description": "Upload images to TurboImageHost with optional authentication, dynamic endpoint configuration, and cover image support",
             "website": "https://www.turboimagehost.com",
-            "implementation": "python",
+            "implementation": "go",
             "features": {
                 "galleries": True,
                 "covers": True,
@@ -131,91 +132,11 @@ class TurboPlugin(ImageHostPlugin):
     def initialize_session(
         self, config: Dict[str, Any], creds: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Initialize upload session for TurboImageHost.
-
-        Gets endpoint configuration and handles optional login.
-        """
-        # Create context with client (using helper)
-        context = helpers.create_upload_context(
-            api,
-            cookies=None,
-            endpoint="https://www.turboimagehost.com/upload_html5.tu"
-        )
-
-        # Get client from context
-        client = helpers.get_client_from_context(context)
-
-        # 1. Get Config/Endpoint
-        ep = api.get_turbo_config(client=client)
-        if ep:
-            context["endpoint"] = ep
-
-        # 2. Login (optional)
-        user = creds.get("turbo_user")
-        pwd = creds.get("turbo_pass")
-        if user and pwd:
-            cookies = api.turbo_login(user, pwd, client=client)
-            if cookies:
-                context["cookies"] = cookies
-                logger.info("TurboImageHost login successful")
-
-        return context
+        """Stub - Go sidecar handles session initialization."""
+        return {}
 
     def upload_file(
         self, file_path: str, group, config: Dict[str, Any], context: Dict[str, Any], progress_callback
     ):
-        """
-        Upload a single file to TurboImageHost.
-
-        Args:
-            file_path: Path to image file
-            group: Group object containing files
-            config: Plugin configuration from UI
-            context: Session context from initialize_session
-            progress_callback: Function to report upload progress
-
-        Returns:
-            Tuple of (viewer_url, thumb_url)
-        """
-        # Get client from context (using helper)
-        client = helpers.get_client_from_context(context)
-
-        # Apply cookies if present
-        if context.get("cookies"):
-            client.cookies.update(context["cookies"])
-
-        # Determine if this is a cover image (using helper)
-        is_cover = helpers.is_cover_image(file_path, group, config)
-
-        # Use max thumbnail size for covers
-        thumb = "600" if is_cover else config["thumbnail_size"]
-
-        # Create uploader (using helper for progress callback)
-        uploader = api.TurboUploader(
-            file_path,
-            os.path.basename(file_path),
-            helpers.create_progress_callback(progress_callback),
-            context["endpoint"],
-            api.generate_turbo_upload_id(),
-            config["content_type"],
-            thumb,
-            config.get("gallery_id"),
-            client=client,
-        )
-
-        try:
-            # Perform upload (using helpers)
-            url, data, headers = uploader.get_request_params()
-            headers = helpers.prepare_upload_headers(headers, data)
-            r = client.post(url, headers=headers, data=data, timeout=300)
-
-            try:
-                resp = r.json()
-            except (ValueError, TypeError) as e:
-                logger.debug(f"Response was not JSON, using text: {e}")
-                resp = r.text
-
-            return uploader.parse_response(resp)
-        finally:
-            uploader.close()
+        """Stub - Go sidecar handles file uploads."""
+        pass

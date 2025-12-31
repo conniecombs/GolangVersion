@@ -1,9 +1,9 @@
 # modules/plugins/imgur.py
 """
-Imgur plugin - Schema-based implementation.
+Imgur plugin - Schema-based implementation with Go sidecar uploads.
 
-Python-based upload plugin with anonymous and authenticated uploads.
-Demonstrates standard config keys and auto-discovery.
+Go-based upload plugin (upload handled by Go sidecar).
+Python side manages UI, configuration validation, and API key handling.
 """
 
 import os
@@ -33,7 +33,7 @@ class ImgurPlugin(ImageHostPlugin):
             "author": "Connie's Uploader Team",
             "description": "Upload images to Imgur with anonymous or authenticated uploads, album support, and automatic thumbnail generation",
             "website": "https://imgur.com",
-            "implementation": "python",
+            "implementation": "go",
             "features": {
                 "galleries": True,  # Imgur calls them "albums"
                 "covers": False,  # Imgur doesn't have cover images
@@ -141,118 +141,11 @@ class ImgurPlugin(ImageHostPlugin):
     def initialize_session(
         self, config: Dict[str, Any], creds: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Initialize upload session for Imgur.
-
-        Imgur supports both anonymous and authenticated uploads.
-        """
-        # Create context with client (using helper)
-        context = helpers.create_upload_context(
-            api,
-            client_id=creds.get("imgur_client_id"),
-            access_token=creds.get("imgur_access_token")
-        )
-
-        # Determine upload mode
-        if context["access_token"]:
-            logger.info("Imgur: Using authenticated upload")
-        elif context["client_id"]:
-            logger.info("Imgur: Using anonymous upload with Client ID")
-        else:
-            logger.warning("Imgur: No credentials provided - uploads may fail")
-
-        return context
+        """Stub - Go sidecar handles session initialization."""
+        return {}
 
     def upload_file(
         self, file_path: str, group, config: Dict[str, Any], context: Dict[str, Any], progress_callback
     ):
-        """
-        Upload a single file to Imgur.
-
-        Args:
-            file_path: Path to image file
-            group: Group object containing files
-            config: Plugin configuration from UI
-            context: Session context from initialize_session
-            progress_callback: Function to report upload progress
-
-        Returns:
-            Tuple of (viewer_url, thumb_url)
-        """
-        # Get client from context (using helper)
-        client = helpers.get_client_from_context(context)
-
-        # Build headers
-        headers = {}
-        if context.get("access_token"):
-            headers["Authorization"] = f"Bearer {context['access_token']}"
-        elif context.get("client_id"):
-            headers["Authorization"] = f"Client-ID {context['client_id']}"
-        else:
-            raise ValueError("Imgur upload requires either Client ID or Access Token")
-
-        # Build upload data
-        upload_data = {}
-
-        # Title (use config title or filename)
-        if config.get("title"):
-            upload_data["title"] = config["title"]
-        else:
-            upload_data["title"] = os.path.splitext(os.path.basename(file_path))[0]
-
-        # Album (if specified)
-        if config.get("album_id"):
-            upload_data["album"] = config["album_id"]
-
-        # Mature flag
-        if config.get("mature", False):
-            upload_data["mature"] = "1"
-
-        # Open file and upload
-        with open(file_path, "rb") as f:
-            files = {"image": f}
-
-            # Call progress callback at start
-            progress_callback(0.1)
-
-            try:
-                # Upload to Imgur API
-                r = client.post(
-                    "https://api.imgur.com/3/image",
-                    headers=headers,
-                    data=upload_data,
-                    files=files,
-                    timeout=300,
-                )
-
-                # Call progress callback at completion
-                progress_callback(1.0)
-
-                # Parse response
-                response = r.json()
-
-                if response.get("success"):
-                    data = response.get("data", {})
-
-                    # Get image link
-                    image_link = data.get("link")
-
-                    # Build thumbnail link based on size
-                    thumb_size = config.get("thumbnail_size", "m")
-                    if image_link:
-                        # Imgur thumbnail format: replace extension with suffix + extension
-                        # e.g., https://i.imgur.com/abc123.jpg -> https://i.imgur.com/abc123m.jpg
-                        base, ext = os.path.splitext(image_link)
-                        thumb_link = f"{base}{thumb_size}{ext}"
-                    else:
-                        thumb_link = None
-
-                    logger.info(f"Imgur upload successful: {image_link}")
-                    return image_link, thumb_link
-                else:
-                    error_msg = response.get("data", {}).get("error", "Unknown error")
-                    raise ValueError(f"Imgur upload failed: {error_msg}")
-
-            except Exception as e:
-                logger.error(f"Imgur upload error: {e}")
-                raise
+        """Stub - Go sidecar handles file uploads."""
+        pass
