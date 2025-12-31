@@ -10,6 +10,7 @@ UI code reduced by ~80%, all boilerplate eliminated.
 import os
 from typing import Dict, Any, List
 from .base import ImageHostPlugin
+from . import helpers
 from .. import api
 from loguru import logger
 
@@ -120,16 +121,12 @@ class PixhostPlugin(ImageHostPlugin):
         """
         errors = []
 
-        # Validate gallery hash format if provided
+        # Validate gallery hash format if provided (using helper)
         gallery_hash = config.get("gallery_hash", "")
-        if gallery_hash and not gallery_hash.isalnum():
-            errors.append("Gallery hash must contain only letters and numbers")
+        helpers.validate_gallery_id(gallery_hash, errors, alphanumeric=True)
 
-        # Convert cover_count to int for storage
-        try:
-            config["cover_limit"] = int(config.get("cover_count", 0))
-        except (ValueError, TypeError):
-            errors.append("Cover count must be a valid number")
+        # Convert cover_count to int for storage (using helper)
+        helpers.validate_cover_count(config, errors)
 
         return errors
 
@@ -141,7 +138,7 @@ class PixhostPlugin(ImageHostPlugin):
 
         Creates HTTP client for batch uploads.
         """
-        return {"client": api.create_resilient_client(), "created_galleries": []}
+        return helpers.create_upload_context(api, created_galleries=[])
 
     def prepare_group(
         self, group, config: Dict[str, Any], context: Dict[str, Any], creds: Dict[str, Any]
@@ -178,24 +175,17 @@ class PixhostPlugin(ImageHostPlugin):
         Returns:
             Tuple of (viewer_url, thumb_url)
         """
-        # Determine if this is a cover image
-        is_cover = False
-        if hasattr(group, "files"):
-            try:
-                idx = group.files.index(file_path)
-                if idx < config.get("cover_limit", 0):
-                    is_cover = True
-            except ValueError as e:
-                logger.debug(f"File {file_path} not found in group files: {e}")
+        # Determine if this is a cover image (using helper)
+        is_cover = helpers.is_cover_image(file_path, group, config)
 
         # Get gallery data if available
         pix_data = getattr(group, "pix_data", {})
 
-        # Create uploader
+        # Create uploader (using helper for progress callback)
         uploader = api.PixhostUploader(
             file_path,
             os.path.basename(file_path),
-            lambda m: progress_callback(m.bytes_read / m.len) if m.len > 0 else None,
+            helpers.create_progress_callback(progress_callback),
             config["content_type"],
             config["thumbnail_size"],
             pix_data.get("gallery_hash", config.get("gallery_hash", "")),
@@ -204,13 +194,13 @@ class PixhostPlugin(ImageHostPlugin):
         )
 
         try:
-            # Perform upload
+            # Perform upload (using helpers)
             url, data, headers = uploader.get_request_params()
-            if "Content-Length" not in headers and hasattr(data, "len"):
-                headers["Content-Length"] = str(data.len)
+            headers = helpers.prepare_upload_headers(headers, data)
 
-            r = context["client"].post(url, headers=headers, data=data, timeout=300)
-            return uploader.parse_response(r.json())
+            client = helpers.get_client_from_context(context)
+            response = helpers.execute_upload(client, url, headers, data, timeout=300)
+            return uploader.parse_response(response)
 
         finally:
             uploader.close()
