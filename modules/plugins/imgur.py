@@ -9,6 +9,7 @@ Demonstrates standard config keys and auto-discovery.
 import os
 from typing import Dict, Any, List
 from .base import ImageHostPlugin
+from . import helpers
 from .. import api
 from loguru import logger
 
@@ -145,12 +146,12 @@ class ImgurPlugin(ImageHostPlugin):
 
         Imgur supports both anonymous and authenticated uploads.
         """
-        client = api.create_resilient_client()
-        context = {
-            "client": client,
-            "client_id": creds.get("imgur_client_id"),
-            "access_token": creds.get("imgur_access_token"),
-        }
+        # Create context with client (using helper)
+        context = helpers.create_upload_context(
+            api,
+            client_id=creds.get("imgur_client_id"),
+            access_token=creds.get("imgur_access_token")
+        )
 
         # Determine upload mode
         if context["access_token"]:
@@ -178,7 +179,8 @@ class ImgurPlugin(ImageHostPlugin):
         Returns:
             Tuple of (viewer_url, thumb_url)
         """
-        client = context["client"]
+        # Get client from context (using helper)
+        client = helpers.get_client_from_context(context)
 
         # Build headers
         headers = {}

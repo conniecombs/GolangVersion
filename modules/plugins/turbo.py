@@ -8,6 +8,7 @@ Python-based upload plugin with optional login and endpoint configuration.
 import os
 from typing import Dict, Any, List
 from .base import ImageHostPlugin
+from . import helpers
 from .. import api
 from loguru import logger
 
@@ -116,11 +117,8 @@ class TurboPlugin(ImageHostPlugin):
         """Custom validation for Turbo configuration."""
         errors = []
 
-        # Convert cover_count to int
-        try:
-            config["cover_limit"] = int(config.get("cover_count", 0))
-        except (ValueError, TypeError):
-            errors.append("Cover count must be a valid number")
+        # Convert cover_count to int (using helper)
+        helpers.validate_cover_count(config, errors)
 
         # Content type - turbo uses "adult" or "all"
         # For now, default to "all" (safe)
@@ -138,12 +136,15 @@ class TurboPlugin(ImageHostPlugin):
 
         Gets endpoint configuration and handles optional login.
         """
-        client = api.create_resilient_client()
-        context = {
-            "client": client,
-            "cookies": None,
-            "endpoint": "https://www.turboimagehost.com/upload_html5.tu",
-        }
+        # Create context with client (using helper)
+        context = helpers.create_upload_context(
+            api,
+            cookies=None,
+            endpoint="https://www.turboimagehost.com/upload_html5.tu"
+        )
+
+        # Get client from context
+        client = helpers.get_client_from_context(context)
 
         # 1. Get Config/Endpoint
         ep = api.get_turbo_config(client=client)
@@ -177,29 +178,24 @@ class TurboPlugin(ImageHostPlugin):
         Returns:
             Tuple of (viewer_url, thumb_url)
         """
-        client = context["client"]
+        # Get client from context (using helper)
+        client = helpers.get_client_from_context(context)
 
         # Apply cookies if present
         if context.get("cookies"):
             client.cookies.update(context["cookies"])
 
-        # Determine if this is a cover image
-        is_cover = False
-        if hasattr(group, "files"):
-            try:
-                idx = group.files.index(file_path)
-                if idx < config.get("cover_limit", 0):
-                    is_cover = True
-            except ValueError as e:
-                logger.debug(f"File {file_path} not found in group files: {e}")
+        # Determine if this is a cover image (using helper)
+        is_cover = helpers.is_cover_image(file_path, group, config)
 
         # Use max thumbnail size for covers
         thumb = "600" if is_cover else config["thumbnail_size"]
 
+        # Create uploader (using helper for progress callback)
         uploader = api.TurboUploader(
             file_path,
             os.path.basename(file_path),
-            lambda m: progress_callback(m.bytes_read / m.len) if m.len > 0 else None,
+            helpers.create_progress_callback(progress_callback),
             context["endpoint"],
             api.generate_turbo_upload_id(),
             config["content_type"],
@@ -209,9 +205,9 @@ class TurboPlugin(ImageHostPlugin):
         )
 
         try:
+            # Perform upload (using helpers)
             url, data, headers = uploader.get_request_params()
-            if "Content-Length" not in headers and hasattr(data, "len"):
-                headers["Content-Length"] = str(data.len)
+            headers = helpers.prepare_upload_headers(headers, data)
             r = client.post(url, headers=headers, data=data, timeout=300)
 
             try:

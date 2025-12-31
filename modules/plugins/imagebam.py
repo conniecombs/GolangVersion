@@ -8,6 +8,7 @@ Python-based upload plugin with session management and CSRF token handling.
 import os
 from typing import Dict, Any, List
 from .base import ImageHostPlugin
+from . import helpers
 from .. import api
 from loguru import logger
 
@@ -95,8 +96,9 @@ class ImageBamPlugin(ImageHostPlugin):
 
         Handles login and CSRF token acquisition.
         """
-        client = api.create_resilient_client()
-        context = {"client": client, "csrf": None, "cookies": None}
+        # Create context with client (using helper)
+        context = helpers.create_upload_context(api, csrf=None, cookies=None)
+        client = helpers.get_client_from_context(context)
 
         user = creds.get("imagebam_user")
         pwd = creds.get("imagebam_pass")
@@ -157,15 +159,17 @@ class ImageBamPlugin(ImageHostPlugin):
         Returns:
             Tuple of (viewer_url, thumb_url)
         """
-        client = context["client"]
+        # Get client from context (using helper)
+        client = helpers.get_client_from_context(context)
         token = getattr(group, "ib_upload_token", None)
         if not token:
             raise ValueError("Upload skipped: No ImageBam Upload Token")
 
+        # Create uploader (using helper for progress callback)
         uploader = api.ImageBamUploader(
             file_path,
             os.path.basename(file_path),
-            lambda m: progress_callback(m.bytes_read / m.len) if m.len > 0 else None,
+            helpers.create_progress_callback(progress_callback),
             config["content_type"],
             config["thumbnail_size"],
             upload_token=token,
@@ -175,10 +179,10 @@ class ImageBamPlugin(ImageHostPlugin):
         )
 
         try:
+            # Perform upload (using helpers)
             url, data, headers = uploader.get_request_params()
-            if "Content-Length" not in headers and hasattr(data, "len"):
-                headers["Content-Length"] = str(data.len)
-            r = client.post(url, headers=headers, data=data, timeout=300)
-            return uploader.parse_response(r.json())
+            headers = helpers.prepare_upload_headers(headers, data)
+            response = helpers.execute_upload(client, url, headers, data, timeout=300)
+            return uploader.parse_response(response)
         finally:
             uploader.close()

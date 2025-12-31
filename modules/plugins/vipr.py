@@ -10,6 +10,7 @@ import threading
 from typing import Dict, Any, List
 import customtkinter as ctk
 from .base import ImageHostPlugin
+from . import helpers
 from .. import api
 from ..widgets import MouseWheelComboBox
 from loguru import logger
@@ -114,11 +115,8 @@ class ViprPlugin(ImageHostPlugin):
         """Custom validation for Vipr configuration."""
         errors = []
 
-        # Convert cover_count to int
-        try:
-            config["cover_count"] = int(config.get("cover_count", 0))
-        except (ValueError, TypeError):
-            errors.append("Cover count must be a valid number")
+        # Convert cover_count to int (using helper)
+        helpers.validate_cover_count(config, errors)
 
         # Get gallery ID from map
         gal_name = config.get("vipr_gallery_name", "")

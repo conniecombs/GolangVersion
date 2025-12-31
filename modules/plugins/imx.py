@@ -8,6 +8,7 @@ Python side only manages UI and gallery creation.
 
 from typing import Dict, Any, List
 from .base import ImageHostPlugin
+from . import helpers
 from .. import api
 from loguru import logger
 
@@ -130,11 +131,8 @@ class ImxPlugin(ImageHostPlugin):
         """Custom validation for IMX configuration."""
         errors = []
 
-        # Convert cover_count to int
-        try:
-            config["cover_count"] = int(config.get("cover_count", 0))
-        except (ValueError, TypeError):
-            errors.append("Cover count must be a valid number")
+        # Convert cover_count to int (using helper)
+        helpers.validate_cover_count(config, errors)
 
         return errors
 
