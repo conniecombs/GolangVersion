@@ -11,12 +11,14 @@ This is the **first production-ready release** with major improvements to stabil
 
 ### Highlights
 
-✨ **Automatic Upload Retry** - Failed uploads retry automatically with exponential backoff  
-🖼️ **10x Better Thumbnails** - Professional-quality Lanczos resampling  
-🔒 **Zero CVEs** - All dependencies updated, vulnerabilities patched  
-🧵 **Thread-Safe** - No more race conditions or memory leaks  
-📦 **Fixed Builds** - PyInstaller now correctly bundles Go sidecar  
-📊 **Structured Logging** - JSON-formatted logs for debugging  
+✨ **Automatic Upload Retry** - Failed uploads retry automatically with exponential backoff
+🖼️ **10x Better Thumbnails** - Professional-quality Lanczos resampling
+🔒 **Zero CVEs** - All dependencies updated, vulnerabilities patched
+🧵 **Thread-Safe** - No more race conditions or memory leaks
+📦 **Fixed Builds** - PyInstaller now correctly bundles Go sidecar
+📊 **Structured Logging** - JSON-formatted logs for debugging
+🔐 **SHA256 Verification** - Cryptographic download verification in build script
+🚀 **CI/CD Pipeline** - Automated builds, tests, and security scanning  
 
 ---
 
@@ -98,6 +100,50 @@ python test_sidecar.py
 
 ---
 
+## 🤖 Automated Releases
+
+Starting with v1.0.0, releases are fully automated via GitHub Actions:
+
+### How to Create a Release
+
+**Maintainers can trigger a release by:**
+
+1. **Tag-based release** (recommended):
+   ```bash
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+
+2. **Manual workflow dispatch**:
+   - Go to Actions → Release → Run workflow
+   - Enter version (e.g., v1.0.0)
+
+### What Gets Built
+
+Each release automatically generates:
+
+- **Windows x64**: `ConniesUploader.exe` + ZIP package with SHA256
+- **Linux x64**: Tarball with binary and SHA256
+- **macOS x64**: ZIP package with binary and SHA256
+- **Checksums**: SHA256 hashes for all artifacts
+- **Changelog**: Automatically included from CHANGELOG.md
+
+### Download Verification
+
+Always verify downloads:
+
+```bash
+# Windows (PowerShell)
+$hash = (Get-FileHash ConniesUploader.exe -Algorithm SHA256).Hash
+Get-Content ConniesUploader.exe.sha256
+# Compare the two hashes
+
+# Linux/macOS
+sha256sum -c ConniesUploader.sha256
+```
+
+---
+
 ## 🔄 What Changed
 
 ### For End Users
@@ -117,6 +163,14 @@ python test_sidecar.py
 - **Resource Management:** Proper cleanup of HTTP connections
 - **Error Handling:** Consistent retry logic with exponential backoff
 - **Build Verification:** Automated checks for sidecar inclusion
+- **SHA256 Verification:** Cryptographic verification of Python and Go downloads
+- **CI/CD Pipeline:**
+  - Automated builds on push/PR (Windows, Linux, macOS)
+  - Cross-platform Go and Python validation
+  - Daily security scans (CodeQL, gosec, Bandit, TruffleHog)
+  - Automated releases with checksums
+  - Dependency vulnerability scanning (govulncheck, Safety)
+  - Code quality checks (golangci-lint, flake8)
 
 ---
 

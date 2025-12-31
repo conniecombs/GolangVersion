@@ -35,6 +35,44 @@ This release marks the first production-ready version with comprehensive stabili
   - Build script size verification (warns if sidecar missing)
   - Detailed error messages for common build issues
 
+#### **CI/CD & Automation**
+- **GitHub Actions CI Pipeline**
+  - Automated build and test on all pushes and PRs
+  - Cross-platform builds (Windows, Linux, macOS)
+  - Go build validation with caching
+  - Python syntax and dependency checks
+  - Build size verification (ensures sidecar bundling)
+
+- **Automated Release Pipeline**
+  - Tag-based release automation (v*.*.*)
+  - Cross-platform artifact builds
+  - SHA256 checksum generation for all artifacts
+  - Automatic changelog inclusion in releases
+  - Windows (.exe + .zip), Linux (.tar.gz), macOS (.zip)
+
+- **Security Scanning**
+  - Daily automated security scans
+  - CodeQL analysis for Go and Python
+  - gosec for Go security issues
+  - Bandit for Python security issues
+  - govulncheck for Go vulnerability detection
+  - Safety for Python dependency vulnerabilities
+  - TruffleHog for secret detection
+  - Dependency review on all PRs
+
+- **Code Quality Checks**
+  - golangci-lint for Go code quality
+  - flake8 for Python code quality
+  - Automated vulnerability scanning
+
+#### **Build Process Security**
+- **SHA256 Verification** for downloads
+  - Python installer cryptographic verification
+  - Go installer cryptographic verification
+  - Uses Windows certutil for hash validation
+  - Aborts installation on checksum mismatch
+  - Prevents corrupted or tampered downloads
+
 #### **Dependencies**
 - github.com/disintegration/imaging v1.6.2 - High-quality image resizing
 - github.com/sirupsen/logrus v1.9.3 - Structured logging
