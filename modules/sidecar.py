@@ -6,9 +6,10 @@ import os
 import sys
 from loguru import logger
 
+
 class SidecarBridge:
     _instance = None
-    
+
     @classmethod
     def get(cls):
         if not cls._instance:
@@ -18,23 +19,23 @@ class SidecarBridge:
     def __init__(self):
         self.proc = None
         self.cmd_lock = threading.Lock()
-        
+
         # Event distribution
         self.listeners = []
         self.listeners_lock = threading.Lock()
-        
+
         self._start_process()
 
     def _start_process(self):
-        if getattr(sys, 'frozen', False):
+        if getattr(sys, "frozen", False):
             base_dir = os.path.dirname(sys.executable)
         else:
             base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-            
+
         # Cross-platform binary check
-        binary_name = "uploader.exe" if os.name == 'nt' else "uploader"
+        binary_name = "uploader.exe" if os.name == "nt" else "uploader"
         exe = os.path.join(base_dir, binary_name)
-        
+
         if not os.path.exists(exe):
             exe = os.path.join(os.getcwd(), binary_name)
 
@@ -44,10 +45,10 @@ class SidecarBridge:
 
         try:
             startupinfo = None
-            if os.name == 'nt':
+            if os.name == "nt":
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                
+
             self.proc = subprocess.Popen(
                 [exe],
                 stdin=subprocess.PIPE,
@@ -55,13 +56,13 @@ class SidecarBridge:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                startupinfo=startupinfo
+                startupinfo=startupinfo,
             )
-            
+
             t = threading.Thread(target=self._listen, daemon=True)
             t.start()
             logger.info(f"Sidecar started: {exe}")
-            
+
         except Exception as e:
             logger.error(f"Failed to start sidecar: {e}")
 
@@ -81,10 +82,12 @@ class SidecarBridge:
         while self.proc:
             try:
                 line = self.proc.stdout.readline()
-                if not line: break
+                if not line:
+                    break
                 line = line.strip()
-                if not line: continue
-                
+                if not line:
+                    continue
+
                 try:
                     data = json.loads(line)
                     self._dispatch_event(data)
@@ -108,8 +111,10 @@ class SidecarBridge:
                     pass
 
     def send_cmd(self, payload):
-        if not self.proc: self._start_process()
-        if not self.proc: return
+        if not self.proc:
+            self._start_process()
+        if not self.proc:
+            return
 
         with self.cmd_lock:
             try:
@@ -127,9 +132,9 @@ class SidecarBridge:
         temp_q = queue.Queue()
         self.add_listener(temp_q)
         self.send_cmd(payload)
-        
+
         response = {"status": "error", "msg": "Timeout"}
-        
+
         try:
             # Simple heuristic: wait for 'result', 'data', or 'error'
             while True:
@@ -141,5 +146,5 @@ class SidecarBridge:
             pass
         finally:
             self.remove_listener(temp_q)
-            
+
         return response

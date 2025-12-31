@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/PuerkitoBio/goquery"
 	"image"
 	"image/jpeg"
 	_ "image/png"
@@ -24,7 +25,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"github.com/PuerkitoBio/goquery"
 )
 
 // --- Constants ---
@@ -84,7 +84,7 @@ func randomString(n int) string {
 }
 
 func main() {
-	// Note: Using crypto/rand for random string generation (more secure) 
+	// Note: Using crypto/rand for random string generation (more secure)
 
 	jar, _ := cookiejar.New(nil)
 	client = &http.Client{
@@ -120,7 +120,7 @@ func main() {
 			sendJSON(OutputEvent{Type: "error", Msg: fmt.Sprintf("JSON Decode Error: %v", err)})
 			continue
 		}
-		
+
 		// Blocking push if queue is full, effectively throttling the UI
 		jobQueue <- job
 	}
@@ -166,7 +166,9 @@ func handleFinalizeGallery(job JobRequest) {
 
 func handleGenerateThumb(job JobRequest) {
 	w, _ := strconv.Atoi(job.Config["width"])
-	if w == 0 { w = 100 }
+	if w == 0 {
+		w = 100
+	}
 
 	if len(job.Files) == 0 {
 		sendJSON(OutputEvent{Type: "error", Msg: "No file provided"})
@@ -237,7 +239,9 @@ func handleLoginVerify(job JobRequest) {
 	}
 
 	status := "failed"
-	if success { status = "success" }
+	if success {
+		status = "success"
+	}
 	sendJSON(OutputEvent{Type: "result", Status: status, Msg: msg})
 }
 
@@ -245,10 +249,14 @@ func handleListGalleries(job JobRequest) {
 	var galleries []map[string]string
 	switch job.Service {
 	case "vipr.im":
-		if viprSessId == "" { doViprLogin(job.Creds) }
+		if viprSessId == "" {
+			doViprLogin(job.Creds)
+		}
 		galleries = scrapeViprGalleries()
 	case "imagebam.com":
-		if ibCsrf == "" { doImageBamLogin(job.Creds) }
+		if ibCsrf == "" {
+			doImageBamLogin(job.Creds)
+		}
 	case "imx.to":
 		galleries = scrapeImxGalleries(job.Creds)
 	}
@@ -343,11 +351,20 @@ func uploadImx(fp string, job *JobRequest) (string, string, error) {
 	go func() {
 		defer pw.Close()
 		defer writer.Close()
-		part, _ := writer.CreateFormFile("image", filepath.Base(fp))
-		f, _ := os.Open(fp)
-		if f != nil {
-			defer f.Close()
-			io.Copy(part, f)
+		part, err := writer.CreateFormFile("image", filepath.Base(fp))
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to create form file: %w", err))
+			return
+		}
+		f, err := os.Open(fp)
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to open file: %w", err))
+			return
+		}
+		defer f.Close()
+		if _, err := io.Copy(part, f); err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to copy file: %w", err))
+			return
 		}
 		writer.WriteField("format", "json")
 		writer.WriteField("thumbnail_size", job.Config["imx_thumb_id"])
@@ -357,17 +374,23 @@ func uploadImx(fp string, job *JobRequest) (string, string, error) {
 		}
 	}()
 
-	req, _ := http.NewRequest("POST", "https://api.imx.to/v1/upload.php", pr)
+	req, err := http.NewRequest("POST", "https://api.imx.to/v1/upload.php", pr)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create request: %w", err)
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-API-KEY", job.Creds["api_key"])
 	req.Header.Set("User-Agent", UserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read response: %w", err)
+	}
 
 	var res struct {
 		Status string `json:"status"`
@@ -377,9 +400,11 @@ func uploadImx(fp string, job *JobRequest) (string, string, error) {
 		} `json:"data"`
 		Msg string `json:"message"`
 	}
-	json.Unmarshal(raw, &res)
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", "", fmt.Errorf("failed to parse response: %w", err)
+	}
 	if res.Status != "success" {
-		return "", "", fmt.Errorf("%s", res.Msg)
+		return "", "", fmt.Errorf("upload failed: %s", res.Msg)
 	}
 	return res.Data.Img, res.Data.Thumb, nil
 }
@@ -391,11 +416,20 @@ func uploadPixhost(fp string, job *JobRequest) (string, string, error) {
 	go func() {
 		defer pw.Close()
 		defer writer.Close()
-		part, _ := writer.CreateFormFile("img", filepath.Base(fp))
-		f, _ := os.Open(fp)
-		if f != nil {
-			defer f.Close()
-			io.Copy(part, f)
+		part, err := writer.CreateFormFile("img", filepath.Base(fp))
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to create form file: %w", err))
+			return
+		}
+		f, err := os.Open(fp)
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to open file: %w", err))
+			return
+		}
+		defer f.Close()
+		if _, err := io.Copy(part, f); err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to copy file: %w", err))
+			return
 		}
 		writer.WriteField("content_type", job.Config["pix_content"])
 		writer.WriteField("max_th_size", job.Config["pix_thumb"])
@@ -404,33 +438,45 @@ func uploadPixhost(fp string, job *JobRequest) (string, string, error) {
 		}
 	}()
 
-	req, _ := http.NewRequest("POST", "https://api.pixhost.to/images", pr)
+	req, err := http.NewRequest("POST", "https://api.pixhost.to/images", pr)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create request: %w", err)
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("User-Agent", UserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read response: %w", err)
+	}
 
 	var res struct {
 		Show string `json:"show_url"`
 		Th   string `json:"th_url"`
 		Err  string `json:"error_msg"`
 	}
-	json.Unmarshal(raw, &res)
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", "", fmt.Errorf("failed to parse response: %w", err)
+	}
 	if res.Show == "" {
-		return "", "", fmt.Errorf("%s", res.Err)
+		return "", "", fmt.Errorf("upload failed: %s", res.Err)
 	}
 	return res.Show, res.Th, nil
 }
 
 func uploadVipr(fp string, job *JobRequest) (string, string, error) {
-	if viprSessId == "" { doViprLogin(job.Creds) }
+	if viprSessId == "" {
+		doViprLogin(job.Creds)
+	}
 	upUrl := viprEndpoint
-	if upUrl == "" { upUrl = "https://vipr.im/cgi-bin/upload.cgi" }
+	if upUrl == "" {
+		upUrl = "https://vipr.im/cgi-bin/upload.cgi"
+	}
 
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
@@ -438,11 +484,20 @@ func uploadVipr(fp string, job *JobRequest) (string, string, error) {
 		defer pw.Close()
 		defer writer.Close()
 		safeName := strings.ReplaceAll(filepath.Base(fp), " ", "_")
-		part, _ := writer.CreateFormFile("file_0", safeName)
-		f, _ := os.Open(fp)
-		if f != nil {
-			defer f.Close()
-			io.Copy(part, f)
+		part, err := writer.CreateFormFile("file_0", safeName)
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to create form file: %w", err))
+			return
+		}
+		f, err := os.Open(fp)
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to open file: %w", err))
+			return
+		}
+		defer f.Close()
+		if _, err := io.Copy(part, f); err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to copy file: %w", err))
+			return
 		}
 		writer.WriteField("upload_type", "file")
 		writer.WriteField("sess_id", viprSessId)
@@ -454,12 +509,16 @@ func uploadVipr(fp string, job *JobRequest) (string, string, error) {
 
 	u := upUrl + "?upload_id=" + randomString(12) + "&js_on=1&utype=reg&upload_type=file"
 	resp, err := doRequest("POST", u, pr, writer.FormDataContentType())
-	if err != nil { return "", "", err }
+	if err != nil {
+		return "", "", fmt.Errorf("request failed: %w", err)
+	}
 	defer resp.Body.Close()
 
 	// Parse initial response
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil { return "", "", err }
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse response: %w", err)
+	}
 
 	if textArea := doc.Find("textarea[name='fn']"); textArea.Length() > 0 {
 		fnVal := textArea.Text()
@@ -479,8 +538,12 @@ func uploadVipr(fp string, job *JobRequest) (string, string, error) {
 		reThumb := regexp.MustCompile(`src=['"](https?://vipr\.im/th/[^'"]+)['"]`)
 		mI := reImg.FindStringSubmatch(html)
 		mT := reThumb.FindStringSubmatch(html)
-		if len(mI) > 1 { imgUrl = mI[1] }
-		if len(mT) > 1 { thumbUrl = mT[1] }
+		if len(mI) > 1 {
+			imgUrl = mI[1]
+		}
+		if len(mT) > 1 {
+			thumbUrl = mT[1]
+		}
 	}
 
 	if imgUrl != "" && thumbUrl != "" {
@@ -490,11 +553,19 @@ func uploadVipr(fp string, job *JobRequest) (string, string, error) {
 }
 
 func uploadTurbo(fp string, job *JobRequest) (string, string, error) {
-	if turboEndpoint == "" { doTurboLogin(job.Creds) }
+	if turboEndpoint == "" {
+		doTurboLogin(job.Creds)
+	}
 	endp := turboEndpoint
-	if endp == "" { endp = "https://www.turboimagehost.com/upload_html5.tu" }
+	if endp == "" {
+		endp = "https://www.turboimagehost.com/upload_html5.tu"
+	}
 
-	fi, _ := os.Stat(fp)
+	fi, err := os.Stat(fp)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to stat file: %w", err)
+	}
+
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
 	go func() {
@@ -503,11 +574,20 @@ func uploadTurbo(fp string, job *JobRequest) (string, string, error) {
 		h := make(textproto.MIMEHeader)
 		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="qqfile"; filename="%s"`, quoteEscape(filepath.Base(fp))))
 		h.Set("Content-Type", "application/octet-stream")
-		part, _ := writer.CreatePart(h)
-		f, _ := os.Open(fp)
-		if f != nil {
-			defer f.Close()
-			io.Copy(part, f)
+		part, err := writer.CreatePart(h)
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to create form part: %w", err))
+			return
+		}
+		f, err := os.Open(fp)
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to open file: %w", err))
+			return
+		}
+		defer f.Close()
+		if _, err := io.Copy(part, f); err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to copy file: %w", err))
+			return
 		}
 		writer.WriteField("qquuid", randomString(32))
 		writer.WriteField("qqfilename", filepath.Base(fp))
@@ -517,16 +597,23 @@ func uploadTurbo(fp string, job *JobRequest) (string, string, error) {
 	}()
 
 	resp, err := doRequest("POST", endp, pr, writer.FormDataContentType())
-	if err != nil { return "", "", err }
-	raw, _ := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("request failed: %w", err)
+	}
+	raw, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read response: %w", err)
+	}
 
 	var res struct {
 		Success bool   `json:"success"`
 		NewUrl  string `json:"newUrl"`
 		Id      string `json:"id"`
 	}
-	json.Unmarshal(raw, &res)
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", "", fmt.Errorf("failed to parse response: %w", err)
+	}
 	if res.Success {
 		if res.NewUrl != "" {
 			return scrapeBBCode(res.NewUrl)
@@ -540,24 +627,38 @@ func uploadTurbo(fp string, job *JobRequest) (string, string, error) {
 }
 
 func uploadImageBam(fp string, job *JobRequest) (string, string, error) {
-	if ibUploadToken == "" { doImageBamLogin(job.Creds) }
+	if ibUploadToken == "" {
+		doImageBamLogin(job.Creds)
+	}
 
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
 	go func() {
 		defer pw.Close()
 		defer writer.Close()
-		part, _ := writer.CreateFormFile("files[0]", filepath.Base(fp))
-		f, _ := os.Open(fp)
-		if f != nil {
-			defer f.Close()
-			io.Copy(part, f)
+		part, err := writer.CreateFormFile("files[0]", filepath.Base(fp))
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to create form file: %w", err))
+			return
+		}
+		f, err := os.Open(fp)
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to open file: %w", err))
+			return
+		}
+		defer f.Close()
+		if _, err := io.Copy(part, f); err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to copy file: %w", err))
+			return
 		}
 		writer.WriteField("_token", ibCsrf)
 		writer.WriteField("data", ibUploadToken)
 	}()
 
-	req, _ := http.NewRequest("POST", "https://www.imagebam.com/upload", pr)
+	req, err := http.NewRequest("POST", "https://www.imagebam.com/upload", pr)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create request: %w", err)
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("X-CSRF-TOKEN", ibCsrf)
@@ -565,7 +666,9 @@ func uploadImageBam(fp string, job *JobRequest) (string, string, error) {
 	req.Header.Set("Origin", "https://www.imagebam.com")
 
 	resp, err := client.Do(req)
-	if err != nil { return "", "", err }
+	if err != nil {
+		return "", "", fmt.Errorf("request failed: %w", err)
+	}
 	defer resp.Body.Close()
 
 	var res struct {
@@ -586,26 +689,36 @@ func uploadImageBam(fp string, job *JobRequest) (string, string, error) {
 
 func scrapeImxGalleries(creds map[string]string) []map[string]string {
 	user := creds["imx_user"]
-	if user == "" { user = creds["vipr_user"] }
+	if user == "" {
+		user = creds["vipr_user"]
+	}
 	pass := creds["imx_pass"]
-	if pass == "" { pass = creds["vipr_pass"] }
+	if pass == "" {
+		pass = creds["vipr_pass"]
+	}
 
 	v := url.Values{"op": {"login"}, "login": {user}, "password": {pass}, "redirect": {"https://imx.to/user/galleries"}}
 	doRequest("POST", "https://imx.to/login.html", strings.NewReader(v.Encode()), "application/x-www-form-urlencoded")
-	
+
 	resp, err := doRequest("GET", "https://imx.to/user/galleries", nil, "")
-	if err != nil { return nil }
+	if err != nil {
+		return nil
+	}
 	defer resp.Body.Close()
-	
+
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil { return nil }
-	
+	if err != nil {
+		return nil
+	}
+
 	var results []map[string]string
 	seen := make(map[string]bool)
 
 	doc.Find("a").Each(func(i int, s *goquery.Selection) {
 		href, exists := s.Attr("href")
-		if !exists { return }
+		if !exists {
+			return
+		}
 		if strings.Contains(href, "/g/") {
 			parts := strings.Split(href, "/g/")
 			if len(parts) > 1 {
@@ -613,7 +726,9 @@ func scrapeImxGalleries(creds map[string]string) []map[string]string {
 				id = strings.Split(id, "?")[0]
 				id = strings.Split(id, "/")[0]
 				name := strings.TrimSpace(s.Find("i").Text())
-				if name == "" { return }
+				if name == "" {
+					return
+				}
 				if !seen[id] {
 					results = append(results, map[string]string{"id": id, "name": name})
 					seen[id] = true
@@ -627,7 +742,9 @@ func scrapeImxGalleries(creds map[string]string) []map[string]string {
 func createImxGallery(creds map[string]string, name string) (string, error) {
 	v := url.Values{"name": {name}, "public": {"1"}, "submit": {"Save"}}
 	resp, err := doRequest("POST", "https://imx.to/user/gallery/add", strings.NewReader(v.Encode()), "application/x-www-form-urlencoded")
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	defer resp.Body.Close()
 	finalUrl := resp.Request.URL.String()
 	if strings.Contains(finalUrl, "id=") {
@@ -635,14 +752,16 @@ func createImxGallery(creds map[string]string, name string) (string, error) {
 		q := u.Query()
 		return q.Get("id"), nil
 	}
-	return "0", nil 
+	return "0", nil
 }
 
 func doViprLogin(creds map[string]string) bool {
 	v := url.Values{"op": {"login"}, "login": {creds["vipr_user"]}, "password": {creds["vipr_pass"]}}
 	doRequest("POST", "https://vipr.im/login.html", strings.NewReader(v.Encode()), "application/x-www-form-urlencoded")
 	resp, err := doRequest("GET", "https://vipr.im/", nil, "")
-	if err != nil { return false }
+	if err != nil {
+		return false
+	}
 	defer resp.Body.Close()
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	doc, _ := goquery.NewDocumentFromReader(bytes.NewReader(bodyBytes))
@@ -668,7 +787,9 @@ func doViprLogin(creds map[string]string) bool {
 
 func scrapeViprGalleries() []map[string]string {
 	resp, err := doRequest("GET", "https://vipr.im/?op=my_files", nil, "")
-	if err != nil { return nil }
+	if err != nil {
+		return nil
+	}
 	defer resp.Body.Close()
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	var results []map[string]string
@@ -710,7 +831,9 @@ func createViprGallery(name string) (string, error) {
 
 func doImageBamLogin(creds map[string]string) bool {
 	resp1, err := doRequest("GET", "https://www.imagebam.com/auth/login", nil, "")
-	if err != nil { return false }
+	if err != nil {
+		return false
+	}
 	defer resp1.Body.Close()
 	doc1, _ := goquery.NewDocumentFromReader(resp1.Body)
 	token := doc1.Find("input[name='_token']").AttrOr("value", "")
@@ -735,7 +858,7 @@ func doImageBamLogin(creds map[string]string) bool {
 		req.Header.Set("User-Agent", UserAgent)
 		if r3, e3 := client.Do(req); e3 == nil {
 			defer r3.Body.Close()
-			var j struct { Status, Data string }
+			var j struct{ Status, Data string }
 			json.NewDecoder(r3.Body).Decode(&j)
 			if j.Status == "success" {
 				ibUploadToken = j.Data
@@ -751,7 +874,9 @@ func doTurboLogin(creds map[string]string) bool {
 		doRequest("POST", "https://www.turboimagehost.com/login", strings.NewReader(v.Encode()), "application/x-www-form-urlencoded")
 	}
 	resp, err := doRequest("GET", "https://www.turboimagehost.com/", nil, "")
-	if err != nil { return false }
+	if err != nil {
+		return false
+	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	html := string(b)
@@ -763,7 +888,9 @@ func doTurboLogin(creds map[string]string) bool {
 
 func scrapeBBCode(urlStr string) (string, string, error) {
 	resp, err := doRequest("GET", urlStr, nil, "")
-	if err != nil { return urlStr, urlStr, nil }
+	if err != nil {
+		return urlStr, urlStr, nil
+	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	html := string(b)
@@ -839,14 +966,28 @@ func handleViperPost(job JobRequest) {
 
 func doRequest(method, urlStr string, body io.Reader, contentType string) (*http.Response, error) {
 	req, err := http.NewRequest(method, urlStr, body)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", UserAgent)
-	if contentType != "" { req.Header.Set("Content-Type", contentType) }
-	if strings.Contains(urlStr, "imagebam.com") { req.Header.Set("Referer", "https://www.imagebam.com/") }
-	if strings.Contains(urlStr, "vipr.im") { req.Header.Set("Referer", "https://vipr.im/") }
-	if strings.Contains(urlStr, "turboimagehost.com") { req.Header.Set("Referer", "https://www.turboimagehost.com/") }
-	if strings.Contains(urlStr, "imx.to") { req.Header.Set("Referer", "https://imx.to/") }
-	if strings.Contains(urlStr, "vipergirls.to") { req.Header.Set("Referer", "https://vipergirls.to/forum.php") }
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if strings.Contains(urlStr, "imagebam.com") {
+		req.Header.Set("Referer", "https://www.imagebam.com/")
+	}
+	if strings.Contains(urlStr, "vipr.im") {
+		req.Header.Set("Referer", "https://vipr.im/")
+	}
+	if strings.Contains(urlStr, "turboimagehost.com") {
+		req.Header.Set("Referer", "https://www.turboimagehost.com/")
+	}
+	if strings.Contains(urlStr, "imx.to") {
+		req.Header.Set("Referer", "https://imx.to/")
+	}
+	if strings.Contains(urlStr, "vipergirls.to") {
+		req.Header.Set("Referer", "https://vipergirls.to/forum.php")
+	}
 	return client.Do(req)
 }
 

@@ -43,7 +43,7 @@ def validate_file_path(filepath: str, allowed_extensions: tuple = None) -> Optio
 
         # Additional security: check for suspicious patterns
         path_str = str(abs_path)
-        if '..' in path_str or abs_path.name.startswith('.'):
+        if ".." in path_str or abs_path.name.startswith("."):
             logger.warning(f"Suspicious file path pattern: {filepath}")
             return None
 
@@ -76,7 +76,7 @@ def validate_directory_path(dirpath: str) -> Optional[str]:
 
         # Check for suspicious patterns
         path_str = str(abs_path)
-        if '..' in path_str:
+        if ".." in path_str:
             logger.warning(f"Suspicious directory path pattern: {dirpath}")
             return None
 
@@ -102,14 +102,14 @@ def sanitize_filename(filename: str, max_length: int = 255) -> str:
     sanitized = filename
 
     for char in dangerous_chars:
-        sanitized = sanitized.replace(char, '_')
+        sanitized = sanitized.replace(char, "_")
 
     # Remove leading/trailing dots and spaces
-    sanitized = sanitized.strip('. ')
+    sanitized = sanitized.strip(". ")
 
     # Ensure not empty
     if not sanitized:
-        sanitized = 'unnamed_file'
+        sanitized = "unnamed_file"
 
     # Truncate if too long
     if len(sanitized) > max_length:
@@ -129,13 +129,7 @@ def validate_service_name(service: str) -> bool:
     Returns:
         True if valid, False otherwise
     """
-    valid_services = {
-        'imx.to',
-        'pixhost.to',
-        'turboimagehost',
-        'vipr.im',
-        'imagebam.com'
-    }
+    valid_services = {"imx.to", "pixhost.to", "turboimagehost", "vipr.im", "imagebam.com"}
 
     if service not in valid_services:
         logger.warning(f"Invalid service name: {service}")
