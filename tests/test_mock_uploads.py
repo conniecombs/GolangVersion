@@ -246,8 +246,8 @@ class PluginTestRunner:
         plugins = self.manager.get_all_plugins()
 
         print(f"  ✓ Loaded {len(plugins)} plugins")
-        for plugin_id, plugin in plugins.items():
-            print(f"    • {plugin.name} ({plugin_id})")
+        for plugin in plugins:
+            print(f"    • {plugin.name} ({plugin.id})")
 
         errors = self.manager.get_load_errors()
         if errors:
@@ -420,9 +420,9 @@ class PluginTestRunner:
         total_tests = 0
         passed_tests = 0
 
-        for plugin_id, plugin in plugins.items():
+        for plugin in plugins:
             # Skip if specific plugin requested and this isn't it
-            if specific_plugin and plugin_id != specific_plugin:
+            if specific_plugin and plugin.id != specific_plugin:
                 continue
 
             self.print_header(f"Testing: {plugin.name}", "═")
@@ -447,7 +447,7 @@ class PluginTestRunner:
                     print(f"\n  ✗ Test failed: {e}")
                     plugin_results[test_name] = False
 
-            self.results[plugin_id] = plugin_results
+            self.results[plugin.id] = plugin_results
 
         # Final summary
         self.print_header("Test Results Summary")
@@ -459,8 +459,10 @@ class PluginTestRunner:
 
         # Per-plugin summary
         print("  Plugin Results:")
+        # Create plugin mapping for lookup
+        plugin_map = {p.id: p for p in plugins}
         for plugin_id, results in self.results.items():
-            plugin = plugins[plugin_id]
+            plugin = plugin_map[plugin_id]
             passed = sum(1 for r in results.values() if r)
             total = len(results)
             status = "✓" if passed == total else "⚠"
