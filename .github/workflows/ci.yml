@@ -103,6 +103,18 @@ jobs:
       with:
         name: uploader-${{ runner.os }}
 
+    - name: Verify Go artifact downloaded (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        if (!(Test-Path "uploader.exe")) {
+          Write-Error "uploader.exe not found after download!"
+          Get-ChildItem -Recurse | Where-Object Name -like "uploader*"
+          exit 1
+        }
+        $size = (Get-Item "uploader.exe").length
+        Write-Output "Go sidecar size: $size bytes"
+      shell: pwsh
+
     - name: Make uploader executable (Unix)
       if: runner.os != 'Windows'
       run: chmod +x uploader
@@ -137,11 +149,23 @@ jobs:
           exit 1
         }
         $size = (Get-Item "dist\ConniesUploader.exe").length
-        Write-Output "Build size: $size bytes"
+        $sizeMB = [math]::Round($size / 1MB, 2)
+        Write-Output "Build size: $sizeMB MB ($size bytes)"
         if ($size -lt 40000000) {
-          Write-Warning "EXE seems small (<40MB), sidecar may not be bundled"
+          Write-Warning "⚠️ Build size is ${sizeMB} MB (expected 40-50 MB)"
+          Write-Warning "This suggests the Go sidecar may not be properly bundled"
+          Write-Warning "Checking if uploader.exe exists in current directory..."
+          if (Test-Path "uploader.exe") {
+            $goSize = (Get-Item "uploader.exe").length
+            $goSizeMB = [math]::Round($goSize / 1MB, 2)
+            Write-Warning "uploader.exe found: $goSizeMB MB"
+          } else {
+            Write-Error "uploader.exe NOT found in build directory!"
+          }
+          # Make this non-fatal for now to allow debugging
+          Write-Warning "Continuing despite size warning..."
         } else {
-          Write-Output "Build size OK - sidecar appears to be bundled"
+          Write-Output "✅ Build size OK ($sizeMB MB) - sidecar appears to be bundled"
         }
       shell: pwsh
 
