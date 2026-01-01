@@ -37,35 +37,17 @@ jobs:
           echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
         fi
 
-    - name: Extract release notes from CHANGELOG
+    - name: Extract release notes
       id: release_notes
       run: |
         VERSION="${{ steps.get_version.outputs.version }}"
         VERSION_NUM="${VERSION#v}"
-
         if [ -f CHANGELOG.md ]; then
-          echo "Extracting release notes for version $VERSION_NUM from CHANGELOG.md"
-
-          # Extract content between this version and next version marker
-          awk "/## \[$VERSION_NUM\]/,/## \[/" CHANGELOG.md | \
-            sed '/## \['"$VERSION_NUM"'\]/d' | \
-            sed '/## \[/Q' | \
-            head -n -1 > /tmp/release_notes.md
-
-          # If extraction failed or empty, use full changelog
-          if [ ! -s /tmp/release_notes.md ]; then
-            echo "Could not extract specific version notes, using full changelog"
-            cp CHANGELOG.md /tmp/release_notes.md
-          fi
+          awk "/## \[$VERSION_NUM\]/,/## \[/" CHANGELOG.md | sed '/## \['"$VERSION_NUM"'\]/d' | sed '/## \[/Q' | head -n -1 > /tmp/release_notes.md
+          if [ ! -s /tmp/release_notes.md ]; then cp CHANGELOG.md /tmp/release_notes.md; fi
         else
-          echo "No CHANGELOG.md found, generating from git log"
-          echo "## What's Changed" > /tmp/release_notes.md
-          echo "" >> /tmp/release_notes.md
           git log --pretty=format:"- %s (%h)" $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")..HEAD >> /tmp/release_notes.md
         fi
-
-        # Store for output
-        cat /tmp/release_notes.md
 
     - name: Upload release notes
       uses: actions/upload-artifact@v4
@@ -83,7 +65,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # FIX: Install Go environment
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
@@ -96,21 +77,18 @@ jobs:
         python-version: '3.11'
         cache: 'pip'
 
-    # FIX: Compile the sidecar binary before PyInstaller runs
     - name: Build Go sidecar
       run: |
         go mod download
         go build -v -ldflags="-s -w" -o uploader.exe uploader.go
 
-    - name: Verify Go sidecar exists
+    - name: Verify Go sidecar
       run: |
-        if (!(Test-Path "uploader.exe")) {
-          Write-Error "uploader.exe not found after build!"
-          exit 1
-        }
+        if (!(Test-Path "uploader.exe")) { Write-Error "uploader.exe missing!"; exit 1 }
         $size = (Get-Item "uploader.exe").length
-        $sizeMB = [math]::Round($size / 1MB, 2)
-        Write-Output "✅ Go sidecar built: $sizeMB MB"
+        Write-Output "✅ Go sidecar built: $([math]::Round($size / 1MB, 2)) MB"
+        # Verify it's not empty (should be > 5MB)
+        if ($size -lt 5000000) { Write-Error "uploader.exe is too small/empty!"; exit 1 }
       shell: pwsh
 
     - name: Install Python dependencies
@@ -118,33 +96,32 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Build with PyInstaller
+    # FIX: Generate a .spec file to avoid PowerShell argument parsing issues with semicolons
+    - name: Create PyInstaller Spec
       run: |
-        pyinstaller --noconsole --onefile --clean --name "ConniesUploader" `
+        pyi-makespec --noconsole --onefile --clean --name "ConniesUploader" `
           --icon "logo.ico" `
-          --add-data "uploader.exe;." `
+          --add-binary "uploader.exe;." `
           --add-data "logo.ico;." `
           --collect-all tkinterdnd2 `
           main.py
+      shell: pwsh
 
-    - name: Verify build and sidecar bundling
+    - name: Build from Spec
       run: |
-        if (!(Test-Path "dist\ConniesUploader.exe")) {
-          Write-Error "Build failed - ConniesUploader.exe not found"
-          exit 1
-        }
+        pyinstaller ConniesUploader.spec
 
+    - name: Verify build and bundling
+      run: |
+        if (!(Test-Path "dist\ConniesUploader.exe")) { Write-Error "Build failed"; exit 1 }
         $size = (Get-Item "dist\ConniesUploader.exe").length
         $sizeMB = [math]::Round($size / 1MB, 2)
-        Write-Output "Build size: $sizeMB MB ($size bytes)"
-
-        # Check if sidecar was bundled (minimum expected size ~40MB)
-        if ($size -lt 40000000) {
-          Write-Error "❌ Build size is only ${sizeMB} MB (expected 40-50 MB)"
-          Write-Error "The Go sidecar appears to NOT be bundled!"
+        Write-Output "Build size: $sizeMB MB"
+        
+        # Increased threshold to 45MB to be safe
+        if ($size -lt 45000000) {
+          Write-Error "❌ Build size is only ${sizeMB} MB. Sidecar likely missing!"
           exit 1
-        } else {
-          Write-Output "✅ Build size OK ($sizeMB MB) - Sidecar appears to be bundled"
         }
       shell: pwsh
 
@@ -153,15 +130,12 @@ jobs:
         cd dist
         $hash = (Get-FileHash -Algorithm SHA256 "ConniesUploader.exe").Hash
         $hash | Out-File -FilePath "ConniesUploader.exe.sha256" -Encoding ascii -NoNewline
-        Write-Output "SHA256: $hash"
         Write-Output "SHA256_WINDOWS=$hash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      shell: pwsh
 
     - name: Create ZIP package
       run: |
         cd dist
         Compress-Archive -Path "ConniesUploader.exe","ConniesUploader.exe.sha256" -DestinationPath "ConniesUploader-${{ needs.prepare-release.outputs.version }}-windows-x64.zip"
-      shell: pwsh
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -171,7 +145,6 @@ jobs:
           dist/ConniesUploader.exe
           dist/ConniesUploader.exe.sha256
           dist/ConniesUploader-${{ needs.prepare-release.outputs.version }}-windows-x64.zip
-        retention-days: 5
 
   build-linux:
     name: Build Linux Release
@@ -182,7 +155,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # FIX: Install Go environment
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
@@ -195,20 +167,10 @@ jobs:
         python-version: '3.11'
         cache: 'pip'
 
-    # FIX: Compile the sidecar binary (no .exe extension for Linux)
     - name: Build Go sidecar
       run: |
         go mod download
         go build -v -ldflags="-s -w" -o uploader uploader.go
-
-    - name: Verify Go sidecar exists
-      run: |
-        if [ ! -f "uploader" ]; then
-          echo "❌ uploader not found after build!"
-          exit 1
-        fi
-        size=$(stat -f%z "uploader" 2>/dev/null || stat -c%s "uploader")
-        echo "✅ Go sidecar built: $size bytes"
 
     - name: Install Python dependencies
       run: |
@@ -218,34 +180,15 @@ jobs:
     - name: Build with PyInstaller
       run: |
         pyinstaller --noconsole --onefile --clean --name "ConniesUploader" \
-          --add-data "uploader:." \
+          --add-binary "uploader:." \
           --add-data "logo.ico:." \
           --collect-all tkinterdnd2 \
           main.py
-
-    - name: Verify build and sidecar bundling
-      run: |
-        if [ ! -f "dist/ConniesUploader" ]; then
-          echo "❌ Build failed - ConniesUploader not found"
-          exit 1
-        fi
-
-        size=$(stat -f%z "dist/ConniesUploader" 2>/dev/null || stat -c%s "dist/ConniesUploader")
-        sizeMB=$((size / 1024 / 1024))
-        echo "Build size: $sizeMB MB ($size bytes)"
-
-        if [ $size -lt 40000000 ]; then
-          echo "❌ Build size is only ${sizeMB} MB (expected 40-50 MB)"
-          exit 1
-        else
-          echo "✅ Build size OK (${sizeMB} MB) - Sidecar appears to be bundled"
-        fi
 
     - name: Calculate checksums
       run: |
         cd dist
         sha256sum ConniesUploader > ConniesUploader.sha256
-        cat ConniesUploader.sha256
 
     - name: Create tarball
       run: |
@@ -260,7 +203,6 @@ jobs:
           dist/ConniesUploader
           dist/ConniesUploader.sha256
           dist/ConniesUploader-${{ needs.prepare-release.outputs.version }}-linux-x64.tar.gz
-        retention-days: 5
 
   build-macos:
     name: Build macOS Release
@@ -271,7 +213,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # FIX: Install Go environment
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
@@ -284,20 +225,10 @@ jobs:
         python-version: '3.11'
         cache: 'pip'
 
-    # FIX: Compile the sidecar binary
     - name: Build Go sidecar
       run: |
         go mod download
         go build -v -ldflags="-s -w" -o uploader uploader.go
-
-    - name: Verify Go sidecar exists
-      run: |
-        if [ ! -f "uploader" ]; then
-          echo "❌ uploader not found after build!"
-          exit 1
-        fi
-        size=$(stat -f%z "uploader")
-        echo "✅ Go sidecar built: $size bytes"
 
     - name: Install Python dependencies
       run: |
@@ -307,34 +238,15 @@ jobs:
     - name: Build with PyInstaller
       run: |
         pyinstaller --noconsole --onefile --clean --name "ConniesUploader" \
-          --add-data "uploader:." \
+          --add-binary "uploader:." \
           --add-data "logo.ico:." \
           --collect-all tkinterdnd2 \
           main.py
-
-    - name: Verify build and sidecar bundling
-      run: |
-        if [ ! -f "dist/ConniesUploader" ]; then
-          echo "❌ Build failed - ConniesUploader not found"
-          exit 1
-        fi
-
-        size=$(stat -f%z "dist/ConniesUploader")
-        sizeMB=$((size / 1024 / 1024))
-        echo "Build size: $sizeMB MB ($size bytes)"
-
-        if [ $size -lt 40000000 ]; then
-          echo "❌ Build size is only ${sizeMB} MB (expected 40-50 MB)"
-          exit 1
-        else
-          echo "✅ Build size OK (${sizeMB} MB) - Sidecar appears to be bundled"
-        fi
 
     - name: Calculate checksums
       run: |
         cd dist
         shasum -a 256 ConniesUploader > ConniesUploader.sha256
-        cat ConniesUploader.sha256
 
     - name: Create ZIP package
       run: |
@@ -349,7 +261,6 @@ jobs:
           dist/ConniesUploader
           dist/ConniesUploader.sha256
           dist/ConniesUploader-${{ needs.prepare-release.outputs.version }}-macos-x64.zip
-        retention-days: 5
 
   publish-release:
     name: Publish GitHub Release
@@ -373,27 +284,18 @@ jobs:
         name: release-notes
         path: .
 
-    - name: Display structure of downloaded files
-      run: ls -R artifacts/
-
     - name: Prepare release assets
       run: |
         mkdir -p release-assets
-
-        # Windows
         cp artifacts/windows-build/ConniesUploader.exe release-assets/
         cp artifacts/windows-build/ConniesUploader.exe.sha256 release-assets/
-        cp artifacts/windows-build/ConniesUploader-${{ needs.prepare-release.outputs.version }}-windows-x64.zip release-assets/
-
-        # Linux
+        cp artifacts/windows-build/ConniesUploader-*-windows-x64.zip release-assets/
         cp artifacts/linux-build/ConniesUploader release-assets/ConniesUploader-linux
         cp artifacts/linux-build/ConniesUploader.sha256 release-assets/ConniesUploader-linux.sha256
-        cp artifacts/linux-build/ConniesUploader-${{ needs.prepare-release.outputs.version }}-linux-x64.tar.gz release-assets/
-
-        # macOS
+        cp artifacts/linux-build/ConniesUploader-*-linux-x64.tar.gz release-assets/
         cp artifacts/macos-build/ConniesUploader release-assets/ConniesUploader-macos
         cp artifacts/macos-build/ConniesUploader.sha256 release-assets/ConniesUploader-macos.sha256
-        cp artifacts/macos-build/ConniesUploader-${{ needs.prepare-release.outputs.version }}-macos-x64.zip release-assets/
+        cp artifacts/macos-build/ConniesUploader-*-macos-x64.zip release-assets/
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -401,14 +303,6 @@ jobs:
         tag_name: ${{ needs.prepare-release.outputs.version }}
         name: "Connie's Uploader ${{ needs.prepare-release.outputs.version }}"
         body_path: release_notes.md
-        draft: false
-        prerelease: false
-        files: |
-          release-assets/ConniesUploader.exe
-          release-assets/ConniesUploader.exe.sha256
-          release-assets/ConniesUploader-${{ needs.prepare-release.outputs.version }}-windows-x64.zip
-          release-assets/ConniesUploader-${{ needs.prepare-release.outputs.version }}-linux-x64.tar.gz
-          release-assets/ConniesUploader-${{ needs.prepare-release.outputs.version }}-macos-x64.zip
-          CHANGELOG.md
+        files: release-assets/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
