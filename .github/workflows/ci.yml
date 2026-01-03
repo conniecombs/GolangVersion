@@ -60,10 +60,12 @@ jobs:
       run: go vet ./...
 
     - name: Run Go tests
-      run: go test -v -coverprofile=coverage.out ./...
+      run: go test -v -coverprofile coverage.out ./...
+      shell: bash
 
     - name: Display test coverage
-      run: go tool cover -func=coverage.out | tail -1
+      run: go tool cover -func coverage.out | tail -1
+      shell: bash
 
     - name: Build uploader
       run: go build -v -ldflags="-s -w" -o uploader${{ runner.os == 'Windows' && '.exe' || '' }} uploader.go

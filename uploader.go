@@ -1237,7 +1237,7 @@ func handleViperLogin(job JobRequest) {
 	// SECURITY NOTE: ViperGirls uses MD5 for authentication (legacy vBulletin system).
 	// This is required by their API and not our choice. Users should use unique passwords.
 	hasher := md5.New()
-	hasher.Write([]byte(pass))
+	_, _ = hasher.Write([]byte(pass)) // hash.Hash.Write never returns an error
 	md5Pass := hex.EncodeToString(hasher.Sum(nil))
 	v := url.Values{"vb_login_username": {user}, "vb_login_md5password": {md5Pass}, "vb_login_md5password_utf": {md5Pass}, "cookieuser": {"1"}, "do": {"login"}, "securitytoken": {"guest"}}
 	resp, _ := doRequest("POST", "https://vipergirls.to/login.php?do=login", strings.NewReader(v.Encode()), "application/x-www-form-urlencoded")
