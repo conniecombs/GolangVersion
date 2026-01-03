@@ -87,8 +87,8 @@ jobs:
         if (!(Test-Path "uploader.exe")) { Write-Error "uploader.exe missing!"; exit 1 }
         $size = (Get-Item "uploader.exe").length
         Write-Output "✅ Go sidecar built: $([math]::Round($size / 1MB, 2)) MB"
-        # Verify it's not empty (should be > 5MB)
-        if ($size -lt 5000000) { Write-Error "uploader.exe is too small/empty!"; exit 1 }
+        # Verify it's not empty (should be > 2MB for stripped binary)
+        if ($size -lt 2000000) { Write-Error "uploader.exe is too small/empty!"; exit 1 }
       shell: pwsh
 
     - name: Install Python dependencies
@@ -96,7 +96,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # FIX: REMOVED --clean from this step
     - name: Create PyInstaller Spec
       run: |
         pyi-makespec --noconsole --onefile --name "ConniesUploader" `
@@ -118,8 +117,8 @@ jobs:
         $sizeMB = [math]::Round($size / 1MB, 2)
         Write-Output "Build size: $sizeMB MB"
         
-        # Increased threshold to 45MB to be safe
-        if ($size -lt 45000000) {
+        # Lowered threshold to 15MB because Go binary is stripped (-s -w) and much smaller
+        if ($size -lt 15000000) {
           Write-Error "❌ Build size is only ${sizeMB} MB. Sidecar likely missing!"
           exit 1
         }
