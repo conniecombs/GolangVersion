@@ -955,7 +955,8 @@ class UploaderApp(ctk.CTk, TkinterDnD.DnDWrapper, DragDropMixin):
         text = self.template_mgr.apply(group.selected_template, ctx, group_results)
 
         try:
-            safe_title = "".join(c for c in group.title if c.isalnum() or c in (" ", "_", "-")).strip()
+            from modules.file_handler import sanitize_filename
+            safe_title = sanitize_filename(group.title)
             ts = datetime.now().strftime("%Y%m%d_%H%M")
             out_dir = "Output"
             os.makedirs(out_dir, exist_ok=True)
@@ -1009,7 +1010,7 @@ class UploaderApp(ctk.CTk, TkinterDnD.DnDWrapper, DragDropMixin):
             if platform.system() == "Windows":
                 os.startfile(folder)
             else:
-                subprocess.call(["xdg-open", folder])
+                subprocess.run(["xdg-open", folder], check=False, shell=False)
 
     def toggle_log(self):
         if self.log_window_ref and self.log_window_ref.winfo_exists():
