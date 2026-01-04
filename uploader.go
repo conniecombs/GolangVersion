@@ -115,10 +115,16 @@ func main() {
 	})
 
 	jar, _ := cookiejar.New(nil)
+	// CRITICAL FIX: Reduce timeout from 120s to 15s to prevent hangs
+	// Combined with 10s context timeout, this ensures no request blocks forever
 	client = &http.Client{
-		Timeout:   120 * time.Second,
+		Timeout:   15 * time.Second,
 		Jar:       jar,
-		Transport: &http.Transport{MaxIdleConnsPerHost: 10},
+		Transport: &http.Transport{
+			MaxIdleConnsPerHost:   10,
+			ResponseHeaderTimeout: 10 * time.Second,
+			DisableKeepAlives:     true, // Prevent connection reuse issues
+		},
 	}
 
 	// --- WORKER POOL IMPLEMENTATION ---
