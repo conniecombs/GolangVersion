@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/base64"
@@ -369,86 +370,69 @@ func processFile(fp string, job *JobRequest) {
 	})
 	logger.Info("Starting upload")
 
-	// CRITICAL FIX: Add per-file timeout to prevent worker pool deadlock
-	// Maximum time for a single file upload (including all retries): 3 minutes
-	// This prevents hung uploads from blocking workers indefinitely
-	fileTimeout := 3 * time.Minute
-	done := make(chan struct{})
-	var url, thumb string
-	var err error
+	// CRITICAL FIX #2: Aggressive 30-second timeout with context cancellation
+	// Previous 3-minute timeout was too long and goroutines weren't being cancelled
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	type result struct {
+		url   string
+		thumb string
+		err   error
+	}
+	resultChan := make(chan result, 1)
 
 	go func() {
-		defer close(done)
-
 		sendJSON(OutputEvent{Type: "status", FilePath: fp, Status: "Uploading"})
 
-		// Retry with exponential backoff: 2s, 4s, 8s (max 3 attempts)
-		maxRetries := 3
-		baseDelay := 2 * time.Second
+		var url, thumb string
+		var err error
 
-		for attempt := 0; attempt < maxRetries; attempt++ {
-			if attempt > 0 {
-				delay := baseDelay * time.Duration(1<<uint(attempt-1)) // 2s, 4s, 8s
-				logger.WithFields(log.Fields{
-					"attempt": attempt,
-					"delay":   delay.String(),
-				}).Warn("Retrying upload")
-				sendJSON(OutputEvent{Type: "status", FilePath: fp, Status: fmt.Sprintf("Retry %d/%d in %v", attempt, maxRetries-1, delay)})
-				time.Sleep(delay)
-				sendJSON(OutputEvent{Type: "status", FilePath: fp, Status: "Uploading"})
-			}
+		// Single attempt with 30-second timeout (no retries - let timeout handle it)
+		switch job.Service {
+		case "imx.to":
+			url, thumb, err = uploadImx(fp, job)
+		case "pixhost.to":
+			url, thumb, err = uploadPixhost(fp, job)
+		case "vipr.im":
+			url, thumb, err = uploadVipr(fp, job)
+		case "turboimagehost":
+			url, thumb, err = uploadTurbo(fp, job)
+		case "imagebam.com":
+			url, thumb, err = uploadImageBam(fp, job)
+		default:
+			err = fmt.Errorf("unknown service: %s", job.Service)
+		}
 
-			switch job.Service {
-			case "imx.to":
-				url, thumb, err = uploadImx(fp, job)
-			case "pixhost.to":
-				url, thumb, err = uploadPixhost(fp, job)
-			case "vipr.im":
-				url, thumb, err = uploadVipr(fp, job)
-			case "turboimagehost":
-				url, thumb, err = uploadTurbo(fp, job)
-			case "imagebam.com":
-				url, thumb, err = uploadImageBam(fp, job)
-			default:
-				err = fmt.Errorf("unknown service: %s", job.Service)
-			}
-
-			// Success - exit retry loop
-			if err == nil {
-				break
-			}
-
-			// Log the error but continue retrying
-			if attempt < maxRetries-1 {
-				sendJSON(OutputEvent{Type: "error", FilePath: fp, Msg: fmt.Sprintf("Attempt %d failed: %v", attempt+1, err)})
-			}
+		select {
+		case resultChan <- result{url: url, thumb: thumb, err: err}:
+		case <-ctx.Done():
+			// Context cancelled, don't send result
 		}
 	}()
 
 	// Wait for upload to complete or timeout
 	select {
-	case <-done:
-		// Upload completed (success or failure)
-		if err != nil {
+	case res := <-resultChan:
+		if res.err != nil {
 			logger.WithFields(log.Fields{
-				"error":    err.Error(),
-				"attempts": 3,
-			}).Error("Upload failed after all retries")
+				"error": res.err.Error(),
+			}).Error("Upload failed")
 			sendJSON(OutputEvent{Type: "status", FilePath: fp, Status: "Failed"})
-			sendJSON(OutputEvent{Type: "error", FilePath: fp, Msg: fmt.Sprintf("Failed after 3 attempts: %v", err)})
+			sendJSON(OutputEvent{Type: "error", FilePath: fp, Msg: fmt.Sprintf("Upload failed: %v", res.err)})
 		} else {
 			logger.WithFields(log.Fields{
-				"url":   url,
-				"thumb": thumb,
+				"url":   res.url,
+				"thumb": res.thumb,
 			}).Info("Upload successful")
-			sendJSON(OutputEvent{Type: "result", FilePath: fp, Url: url, Thumb: thumb})
+			sendJSON(OutputEvent{Type: "result", FilePath: fp, Url: res.url, Thumb: res.thumb})
 			sendJSON(OutputEvent{Type: "status", FilePath: fp, Status: "Done"})
 		}
-	case <-time.After(fileTimeout):
-		// TIMEOUT - prevents worker from being stuck forever
-		logger.WithField("timeout", fileTimeout.String()).Error("Upload timed out")
+	case <-ctx.Done():
+		// TIMEOUT - context cancelled, goroutine should exit
+		logger.Error("Upload timed out after 30 seconds")
 		sendJSON(OutputEvent{Type: "status", FilePath: fp, Status: "Timeout"})
-		sendJSON(OutputEvent{Type: "error", FilePath: fp, Msg: fmt.Sprintf("Upload timed out after %v", fileTimeout)})
+		sendJSON(OutputEvent{Type: "error", FilePath: fp, Msg: "Upload timed out after 30 seconds - worker released"})
 	}
 }
 
