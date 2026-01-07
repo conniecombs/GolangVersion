@@ -12,16 +12,8 @@ import (
 	"time"
 )
 
-// TestContextCancellation verifies that context timeout actually cancels HTTP requests
-func TestContextCancellation(t *testing.T) {
-	// Create a server that hangs forever (but can be interrupted)
-	hangingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Hang until request context is cancelled
-		<-r.Context().Done()
-	}))
-	defer hangingServer.Close()
-
-	// Setup client
+// setupTestClient initializes the HTTP client for testing
+func setupTestClient() {
 	jar, _ := cookiejar.New(nil)
 	client = &http.Client{
 		Timeout: 15 * time.Second,
@@ -32,6 +24,19 @@ func TestContextCancellation(t *testing.T) {
 			DisableKeepAlives:     true,
 		},
 	}
+}
+
+// TestContextCancellation verifies that context timeout actually cancels HTTP requests
+func TestContextCancellation(t *testing.T) {
+	// Create a server that hangs forever (but can be interrupted)
+	hangingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hang until request context is cancelled
+		<-r.Context().Done()
+	}))
+	defer hangingServer.Close()
+
+	// Setup client
+	setupTestClient()
 
 	// Test context cancellation with short timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -56,6 +61,9 @@ func TestContextCancellation(t *testing.T) {
 
 // TestWorkerPoolConcurrency verifies worker pool handles concurrent uploads
 func TestWorkerPoolConcurrency(t *testing.T) {
+	// Setup client
+	setupTestClient()
+
 	// Track concurrent requests
 	var concurrent int32
 	var maxConcurrent int32
@@ -77,7 +85,7 @@ func TestWorkerPoolConcurrency(t *testing.T) {
 		mu.Unlock()
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"success"}`))
+		_, _ = w.Write([]byte(`{"status":"success"}`))
 	}))
 	defer server.Close()
 
@@ -136,6 +144,9 @@ func TestWorkerPoolConcurrency(t *testing.T) {
 
 // TestTimeoutBehavior verifies 10-second timeout is enforced
 func TestTimeoutBehavior(t *testing.T) {
+	// Setup client
+	setupTestClient()
+
 	// Server that takes 20 seconds to respond (but can be interrupted)
 	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Sleep for 20 seconds or until context cancelled
@@ -182,9 +193,12 @@ func TestTimeoutBehavior(t *testing.T) {
 
 // TestNoGoroutineLeak verifies no goroutines leak after uploads
 func TestNoGoroutineLeak(t *testing.T) {
+	// Setup client
+	setupTestClient()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer server.Close()
 
@@ -257,6 +271,9 @@ func TestProcessFileWithTimeout(t *testing.T) {
 
 // TestConcurrentJobProcessing tests multiple jobs being processed concurrently
 func TestConcurrentJobProcessing(t *testing.T) {
+	// Setup client
+	setupTestClient()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
