@@ -12,6 +12,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/disintegration/imaging"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/time/rate"
 	"image"
 	"image/jpeg"
 	_ "image/png"
@@ -69,20 +70,82 @@ type OutputEvent struct {
 
 // --- Globals ---
 var outputMutex sync.Mutex
-var stateMutex sync.Mutex // Protects service state globals
 var client *http.Client
 
-// Service State (protected by stateMutex)
-var viprEndpoint string
-var viprSessId string
-var turboEndpoint string
-var ibCsrf string
-var ibUploadToken string
-var vgSecurityToken string
+// Rate Limiters (prevent IP bans by throttling requests per service)
+// Each service gets 2 requests/second with burst of 5 (reasonable for image hosts)
+var rateLimiters = map[string]*rate.Limiter{
+	"imx.to":          rate.NewLimiter(rate.Limit(2.0), 5),
+	"pixhost.to":      rate.NewLimiter(rate.Limit(2.0), 5),
+	"vipr.im":         rate.NewLimiter(rate.Limit(2.0), 5),
+	"turboimagehost":  rate.NewLimiter(rate.Limit(2.0), 5),
+	"imagebam.com":    rate.NewLimiter(rate.Limit(2.0), 5),
+	"vipergirls.to":   rate.NewLimiter(rate.Limit(1.0), 3), // More conservative for forums
+}
+var rateLimiterMutex sync.RWMutex
+
+// Per-Service State Structs (reduces lock contention vs single global mutex)
+type viprState struct {
+	mu       sync.RWMutex
+	endpoint string
+	sessId   string
+}
+
+type turboState struct {
+	mu       sync.RWMutex
+	endpoint string
+}
+
+type imageBamState struct {
+	mu          sync.RWMutex
+	csrf        string
+	uploadToken string
+}
+
+type viperGirlsState struct {
+	mu            sync.RWMutex
+	securityToken string
+}
+
+var viprSt = &viprState{}
+var turboSt = &turboState{}
+var ibSt = &imageBamState{}
+var vgSt = &viperGirlsState{}
 
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
 
 func quoteEscape(s string) string { return quoteEscaper.Replace(s) }
+
+// getRateLimiter returns the rate limiter for a given service
+// Creates a default limiter if service not found
+func getRateLimiter(service string) *rate.Limiter {
+	rateLimiterMutex.RLock()
+	limiter, exists := rateLimiters[service]
+	rateLimiterMutex.RUnlock()
+
+	if !exists {
+		// Create default limiter for unknown services (2 req/s, burst 5)
+		limiter = rate.NewLimiter(rate.Limit(2.0), 5)
+		rateLimiterMutex.Lock()
+		rateLimiters[service] = limiter
+		rateLimiterMutex.Unlock()
+	}
+
+	return limiter
+}
+
+// waitForRateLimit waits for rate limiter approval before proceeding
+// Returns error if context is cancelled while waiting
+func waitForRateLimit(ctx context.Context, service string) error {
+	limiter := getRateLimiter(service)
+
+	// Wait for permission to proceed (respects context cancellation)
+	if err := limiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limit wait cancelled: %w", err)
+	}
+
+	return nil
+}
 
 const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 
@@ -111,19 +174,21 @@ func main() {
 	// DIAGNOSTIC: Send visible startup message as JSON event (goes to Python console)
 	sendJSON(OutputEvent{
 		Type: "log",
-		Msg:  "=== GO SIDECAR STARTED - DIAGNOSTIC VERSION 2.0.0 - 10 SECOND TIMEOUT ===",
+		Msg:  "=== GO SIDECAR STARTED - VERSION 2.1.0 - FIXED TIMEOUTS (180s/60s) ===",
 	})
 
 	jar, _ := cookiejar.New(nil)
-	// CRITICAL FIX: Reduce timeout from 120s to 15s to prevent hangs
-	// Combined with 10s context timeout, this ensures no request blocks forever
+	// TIMEOUT FIX: Increase timeouts to support large file uploads
+	// - Client timeout: 180s (3 minutes) for the entire request/response cycle
+	// - ResponseHeaderTimeout: 60s to allow servers time to process large uploads before responding
+	// This prevents premature timeouts on large files or slow connections
 	client = &http.Client{
-		Timeout:   15 * time.Second,
+		Timeout:   180 * time.Second,
 		Jar:       jar,
 		Transport: &http.Transport{
 			MaxIdleConnsPerHost:   10,
-			ResponseHeaderTimeout: 10 * time.Second,
-			DisableKeepAlives:     true, // Prevent connection reuse issues
+			ResponseHeaderTimeout: 60 * time.Second,
+			DisableKeepAlives:     false, // Allow connection reuse for efficiency
 		},
 	}
 
@@ -305,17 +370,17 @@ func handleListGalleries(job JobRequest) {
 	var galleries []map[string]string
 	switch job.Service {
 	case "vipr.im":
-		stateMutex.Lock()
-		needsLogin := viprSessId == ""
-		stateMutex.Unlock()
+		viprSt.mu.RLock()
+		needsLogin := viprSt.sessId == ""
+		viprSt.mu.RUnlock()
 		if needsLogin {
 			doViprLogin(job.Creds)
 		}
 		galleries = scrapeViprGalleries()
 	case "imagebam.com":
-		stateMutex.Lock()
-		needsLogin := ibCsrf == ""
-		stateMutex.Unlock()
+		ibSt.mu.RLock()
+		needsLogin := ibSt.csrf == ""
+		ibSt.mu.RUnlock()
 		if needsLogin {
 			doImageBamLogin(job.Creds)
 		}
@@ -386,13 +451,14 @@ func processFile(fp string, job *JobRequest) {
 	sendJSON(OutputEvent{Type: "status", FilePath: fp, Status: "Processing"})
 	logger.Info("=== PROCESSFILE CALLED ===")
 
-	// CRITICAL FIX #2: 2-minute timeout per file
-	// Allows time for large uploads on slower connections
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// TIMEOUT FIX: 3-minute timeout per file to match documentation
+	// Allows time for large uploads (10-50MB) on typical connections
+	// Combined with client timeouts (180s/60s), this prevents premature failures
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	sendJSON(OutputEvent{Type: "log", Msg: fmt.Sprintf(">>> 2-minute timeout started for %s", filepath.Base(fp))})
-	logger.WithField("timeout", "120s").Debug("Context created with timeout")
+	sendJSON(OutputEvent{Type: "log", Msg: fmt.Sprintf(">>> 3-minute timeout started for %s", filepath.Base(fp))})
+	logger.WithField("timeout", "180s").Debug("Context created with timeout")
 
 	type result struct {
 		url   string
@@ -480,10 +546,10 @@ func processFile(fp string, job *JobRequest) {
 		}
 	case <-ctx.Done():
 		// TIMEOUT - context cancelled, goroutine should exit
-		logger.Error("=== TIMEOUT TRIGGERED - 10 SECONDS ELAPSED ===")
-		sendJSON(OutputEvent{Type: "log", Msg: fmt.Sprintf("!!! TIMEOUT TRIGGERED for %s after 10 seconds !!!", filepath.Base(fp))})
+		logger.Error("=== TIMEOUT TRIGGERED - 3 MINUTES ELAPSED ===")
+		sendJSON(OutputEvent{Type: "log", Msg: fmt.Sprintf("!!! TIMEOUT TRIGGERED for %s after 3 minutes !!!", filepath.Base(fp))})
 		sendJSON(OutputEvent{Type: "status", FilePath: fp, Status: "Timeout"})
-		sendJSON(OutputEvent{Type: "error", FilePath: fp, Msg: "Upload timed out after 10 seconds - worker released"})
+		sendJSON(OutputEvent{Type: "error", FilePath: fp, Msg: "Upload timed out after 3 minutes - worker released"})
 	}
 	sendJSON(OutputEvent{Type: "log", Msg: fmt.Sprintf(">>> PROCESSFILE EXITING for %s", filepath.Base(fp))})
 	logger.Debug("=== PROCESSFILE EXITING ===")
@@ -514,6 +580,11 @@ func getImxFormatId(s string) string {
 }
 
 func uploadImx(ctx context.Context, fp string, job *JobRequest) (string, string, error) {
+	// RATE LIMITING: Wait for rate limiter approval to prevent IP bans
+	if err := waitForRateLimit(ctx, "imx.to"); err != nil {
+		return "", "", fmt.Errorf("rate limit: %w", err)
+	}
+
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
 
@@ -721,6 +792,11 @@ func scrapeImxBBCode(viewerURL string) (string, string, error) {
 }
 
 func uploadPixhost(ctx context.Context, fp string, job *JobRequest) (string, string, error) {
+	// RATE LIMITING: Wait for rate limiter approval to prevent IP bans
+	if err := waitForRateLimit(ctx, "pixhost.to"); err != nil {
+		return "", "", fmt.Errorf("rate limit: %w", err)
+	}
+
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
 
@@ -791,18 +867,23 @@ func uploadPixhost(ctx context.Context, fp string, job *JobRequest) (string, str
 }
 
 func uploadVipr(ctx context.Context, fp string, job *JobRequest) (string, string, error) {
-	stateMutex.Lock()
-	needsLogin := viprSessId == ""
-	upUrl := viprEndpoint
-	sessId := viprSessId
-	stateMutex.Unlock()
+	// RATE LIMITING: Wait for rate limiter approval to prevent IP bans
+	if err := waitForRateLimit(ctx, "vipr.im"); err != nil {
+		return "", "", fmt.Errorf("rate limit: %w", err)
+	}
+
+	viprSt.mu.RLock()
+	needsLogin := viprSt.sessId == ""
+	upUrl := viprSt.endpoint
+	sessId := viprSt.sessId
+	viprSt.mu.RUnlock()
 
 	if needsLogin {
 		doViprLogin(job.Creds)
-		stateMutex.Lock()
-		upUrl = viprEndpoint
-		sessId = viprSessId
-		stateMutex.Unlock()
+		viprSt.mu.RLock()
+		upUrl = viprSt.endpoint
+		sessId = viprSt.sessId
+		viprSt.mu.RUnlock()
 	}
 
 	if upUrl == "" {
@@ -902,16 +983,21 @@ func uploadVipr(ctx context.Context, fp string, job *JobRequest) (string, string
 }
 
 func uploadTurbo(ctx context.Context, fp string, job *JobRequest) (string, string, error) {
-	stateMutex.Lock()
-	needsLogin := turboEndpoint == ""
-	endp := turboEndpoint
-	stateMutex.Unlock()
+	// RATE LIMITING: Wait for rate limiter approval to prevent IP bans
+	if err := waitForRateLimit(ctx, "turboimagehost"); err != nil {
+		return "", "", fmt.Errorf("rate limit: %w", err)
+	}
+
+	turboSt.mu.RLock()
+	needsLogin := turboSt.endpoint == ""
+	endp := turboSt.endpoint
+	turboSt.mu.RUnlock()
 
 	if needsLogin {
 		doTurboLogin(job.Creds)
-		stateMutex.Lock()
-		endp = turboEndpoint
-		stateMutex.Unlock()
+		turboSt.mu.RLock()
+		endp = turboSt.endpoint
+		turboSt.mu.RUnlock()
 	}
 
 	if endp == "" {
@@ -999,18 +1085,23 @@ func uploadTurbo(ctx context.Context, fp string, job *JobRequest) (string, strin
 }
 
 func uploadImageBam(ctx context.Context, fp string, job *JobRequest) (string, string, error) {
-	stateMutex.Lock()
-	needsLogin := ibUploadToken == ""
-	csrf := ibCsrf
-	token := ibUploadToken
-	stateMutex.Unlock()
+	// RATE LIMITING: Wait for rate limiter approval to prevent IP bans
+	if err := waitForRateLimit(ctx, "imagebam.com"); err != nil {
+		return "", "", fmt.Errorf("rate limit: %w", err)
+	}
+
+	ibSt.mu.RLock()
+	needsLogin := ibSt.uploadToken == ""
+	csrf := ibSt.csrf
+	token := ibSt.uploadToken
+	ibSt.mu.RUnlock()
 
 	if needsLogin {
 		doImageBamLogin(job.Creds)
-		stateMutex.Lock()
-		csrf = ibCsrf
-		token = ibUploadToken
-		stateMutex.Unlock()
+		ibSt.mu.RLock()
+		csrf = ibSt.csrf
+		token = ibSt.uploadToken
+		ibSt.mu.RUnlock()
 	}
 
 	pr, pw := io.Pipe()
@@ -1161,27 +1252,27 @@ func doViprLogin(creds map[string]string) bool {
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	doc, _ := goquery.NewDocumentFromReader(bytes.NewReader(bodyBytes))
 
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	viprSt.mu.Lock()
+	defer viprSt.mu.Unlock()
 
 	if action, exists := doc.Find("form[action*='upload.cgi']").Attr("action"); exists {
-		viprEndpoint = action
+		viprSt.endpoint = action
 	}
 	if val, exists := doc.Find("input[name='sess_id']").Attr("value"); exists {
-		viprSessId = val
+		viprSt.sessId = val
 	}
-	if viprSessId == "" {
+	if viprSt.sessId == "" {
 		html := string(bodyBytes)
 		if m := regexp.MustCompile(`name=["']sess_id["']\s+value=["']([^"']+)["']`).FindStringSubmatch(html); len(m) > 1 {
-			viprSessId = m[1]
+			viprSt.sessId = m[1]
 		}
-		if viprEndpoint == "" {
+		if viprSt.endpoint == "" {
 			if m := regexp.MustCompile(`action=["'](https?://[^/]+/cgi-bin/upload\.cgi)`).FindStringSubmatch(html); len(m) > 1 {
-				viprEndpoint = m[1]
+				viprSt.endpoint = m[1]
 			}
 		}
 	}
-	return viprSessId != ""
+	return viprSt.sessId != ""
 }
 
 func scrapeViprGalleries() []map[string]string {
@@ -1246,34 +1337,34 @@ func doImageBamLogin(creds map[string]string) bool {
 	defer func() { _ = resp2.Body.Close() }()
 	doc2, _ := goquery.NewDocumentFromReader(resp2.Body)
 
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	ibSt.mu.Lock()
+	defer ibSt.mu.Unlock()
 
-	ibCsrf = doc2.Find("meta[name='csrf-token']").AttrOr("content", "")
-	if ibCsrf == "" {
+	ibSt.csrf = doc2.Find("meta[name='csrf-token']").AttrOr("content", "")
+	if ibSt.csrf == "" {
 		doc2.Find("meta").Each(func(i int, s *goquery.Selection) {
 			if s.AttrOr("name", "") == "csrf-token" {
-				ibCsrf = s.AttrOr("content", "")
+				ibSt.csrf = s.AttrOr("content", "")
 			}
 		})
 	}
-	if ibCsrf != "" {
+	if ibSt.csrf != "" {
 		req, _ := http.NewRequest("POST", "https://www.imagebam.com/upload/session", strings.NewReader("content_type=1&thumbnail_size=1"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
-		req.Header.Set("X-CSRF-TOKEN", ibCsrf)
+		req.Header.Set("X-CSRF-TOKEN", ibSt.csrf)
 		req.Header.Set("User-Agent", UserAgent)
 		if r3, e3 := client.Do(req); e3 == nil {
 			defer func() { _ = r3.Body.Close() }()
 			var j struct{ Status, Data string }
 			if err := json.NewDecoder(r3.Body).Decode(&j); err == nil {
 				if j.Status == "success" {
-					ibUploadToken = j.Data
+					ibSt.uploadToken = j.Data
 				}
 			}
 		}
 	}
-	return ibCsrf != ""
+	return ibSt.csrf != ""
 }
 
 func doTurboLogin(creds map[string]string) bool {
@@ -1291,13 +1382,13 @@ func doTurboLogin(creds map[string]string) bool {
 	b, _ := io.ReadAll(resp.Body)
 	html := string(b)
 
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	turboSt.mu.Lock()
+	defer turboSt.mu.Unlock()
 
 	if m := regexp.MustCompile(`endpoint:\s*'([^']+)'`).FindStringSubmatch(html); len(m) > 1 {
-		turboEndpoint = m[1]
+		turboSt.endpoint = m[1]
 	}
-	return turboEndpoint != ""
+	return turboSt.endpoint != ""
 }
 
 func scrapeBBCode(urlStr string) (string, string, error) {
@@ -1333,9 +1424,9 @@ func handleViperLogin(job JobRequest) {
 	body := string(b)
 	if strings.Contains(body, "Thank you for logging in") {
 		if m := regexp.MustCompile(`SECURITYTOKEN\s*=\s*"([^"]+)"`).FindStringSubmatch(body); len(m) > 1 {
-			stateMutex.Lock()
-			vgSecurityToken = m[1]
-			stateMutex.Unlock()
+			vgSt.mu.Lock()
+			vgSt.securityToken = m[1]
+			vgSt.mu.Unlock()
 		}
 		sendJSON(OutputEvent{Type: "result", Status: "success", Msg: "Login OK"})
 	} else {
@@ -1344,20 +1435,20 @@ func handleViperLogin(job JobRequest) {
 }
 
 func handleViperPost(job JobRequest) {
-	stateMutex.Lock()
-	token := vgSecurityToken
+	vgSt.mu.RLock()
+	token := vgSt.securityToken
 	needsRefresh := token == "" || token == "guest"
-	stateMutex.Unlock()
+	vgSt.mu.RUnlock()
 
 	if needsRefresh {
 		if resp, err := doRequest(context.Background(), "GET", "https://vipergirls.to/forum.php", nil, ""); err == nil {
 			b, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			if m := regexp.MustCompile(`SECURITYTOKEN\s*=\s*"([^"]+)"`).FindStringSubmatch(string(b)); len(m) > 1 {
-				stateMutex.Lock()
-				vgSecurityToken = m[1]
+				vgSt.mu.Lock()
+				vgSt.securityToken = m[1]
 				token = m[1]
-				stateMutex.Unlock()
+				vgSt.mu.Unlock()
 			}
 		}
 	}
