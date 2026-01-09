@@ -61,18 +61,32 @@ type JobRequest struct {
 
 // HttpRequestSpec defines a generic HTTP request for plugin-driven uploads
 type HttpRequestSpec struct {
-	URL            string                       `json:"url"`
-	Method         string                       `json:"method"`
-	Headers        map[string]string            `json:"headers"`
-	MultipartFields map[string]MultipartField   `json:"multipart_fields"`
-	FormFields     map[string]string            `json:"form_fields,omitempty"`
-	ResponseParser ResponseParserSpec           `json:"response_parser"`
+	URL             string                       `json:"url"`
+	Method          string                       `json:"method"`
+	Headers         map[string]string            `json:"headers"`
+	MultipartFields map[string]MultipartField    `json:"multipart_fields"`
+	FormFields      map[string]string            `json:"form_fields,omitempty"`
+	ResponseParser  ResponseParserSpec           `json:"response_parser"`
+	PreRequest      *PreRequestSpec              `json:"pre_request,omitempty"` // NEW: Phase 3 session support
+}
+
+// PreRequestSpec defines a pre-request hook for login/session setup
+type PreRequestSpec struct {
+	Action         string            `json:"action"`          // "login", "get_endpoint", etc.
+	URL            string            `json:"url"`
+	Method         string            `json:"method"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	FormFields     map[string]string `json:"form_fields,omitempty"`
+	UseCookies     bool              `json:"use_cookies"`     // Store cookies for main request
+	ExtractFields  map[string]string `json:"extract_fields"`  // Extract values from response (name -> JSONPath/selector)
+	ResponseType   string            `json:"response_type"`   // "json" or "html"
+	FollowUpRequest *PreRequestSpec  `json:"follow_up_request,omitempty"` // NEW: Chain multiple pre-requests
 }
 
 // MultipartField represents a field in multipart/form-data
 type MultipartField struct {
-	Type  string `json:"type"`  // "file" or "text"
-	Value string `json:"value"` // For text fields: the value; For file fields: the file path
+	Type  string `json:"type"`  // "file", "text", or "dynamic"
+	Value string `json:"value"` // For text: the value; For file: file path; For dynamic: reference to extracted field
 }
 
 // ResponseParserSpec defines how to parse the upload response
@@ -708,6 +722,23 @@ func executeHttpUpload(ctx context.Context, fp string, job *JobRequest) (string,
 		}
 	}
 
+	// NEW: Execute pre-request if specified (login, get endpoint, etc.)
+	extractedValues := make(map[string]string)
+	var sessionClient *http.Client
+
+	if spec.PreRequest != nil {
+		values, preClient, err := executePreRequest(ctx, spec.PreRequest, job.Service)
+		if err != nil {
+			return "", "", fmt.Errorf("pre-request failed: %w", err)
+		}
+		extractedValues = values
+
+		// Use session client with cookies if pre-request requested it
+		if spec.PreRequest.UseCookies {
+			sessionClient = preClient
+		}
+	}
+
 	// Build multipart request
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
@@ -742,6 +773,17 @@ func executeHttpUpload(ctx context.Context, fp string, job *JobRequest) (string,
 					pw.CloseWithError(fmt.Errorf("failed to write field %s: %w", fieldName, err))
 					return
 				}
+			} else if field.Type == "dynamic" {
+				// NEW: Dynamic field - resolve from extracted values
+				value, exists := extractedValues[field.Value]
+				if !exists {
+					pw.CloseWithError(fmt.Errorf("dynamic field %s references unknown extracted value: %s", fieldName, field.Value))
+					return
+				}
+				if err := writer.WriteField(fieldName, value); err != nil {
+					pw.CloseWithError(fmt.Errorf("failed to write dynamic field %s: %w", fieldName, err))
+					return
+				}
 			}
 		}
 	}()
@@ -759,8 +801,13 @@ func executeHttpUpload(ctx context.Context, fp string, job *JobRequest) (string,
 		req.Header.Set(key, value)
 	}
 
-	// Execute request
-	resp, err := client.Do(req)
+	// Execute request (use session client if available, otherwise default)
+	var resp *http.Response
+	if sessionClient != nil {
+		resp, err = sessionClient.Do(req)
+	} else {
+		resp, err = client.Do(req)
+	}
 	if err != nil {
 		return "", "", fmt.Errorf("request failed: %w", err)
 	}
@@ -768,6 +815,273 @@ func executeHttpUpload(ctx context.Context, fp string, job *JobRequest) (string,
 
 	// Parse response based on parser spec
 	return parseHttpResponse(resp, &spec.ResponseParser)
+}
+
+// executePreRequest executes a pre-request hook (login, endpoint discovery, etc.)
+// Returns extracted values and optionally a client with session cookies
+func executePreRequest(ctx context.Context, spec *PreRequestSpec, service string) (map[string]string, *http.Client, error) {
+	log.WithFields(log.Fields{
+		"action":  spec.Action,
+		"url":     spec.URL,
+		"service": service,
+	}).Debug("Executing pre-request")
+
+	// Create client with optional cookie jar
+	var preClient *http.Client
+	if spec.UseCookies {
+		jar, _ := cookiejar.New(nil)
+		preClient = &http.Client{
+			Timeout: 60 * time.Second,
+			Jar:     jar,
+			Transport: &http.Transport{
+				MaxIdleConnsPerHost:   10,
+				ResponseHeaderTimeout: 30 * time.Second,
+			},
+		}
+	} else {
+		preClient = client // Use default client
+	}
+
+	// Build request body
+	var reqBody io.Reader
+	contentType := ""
+
+	if len(spec.FormFields) > 0 {
+		formData := url.Values{}
+		for key, value := range spec.FormFields {
+			formData.Set(key, value)
+		}
+		reqBody = strings.NewReader(formData.Encode())
+		contentType = "application/x-www-form-urlencoded"
+	}
+
+	// Create request
+	req, err := http.NewRequestWithContext(ctx, spec.Method, spec.URL, reqBody)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create pre-request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("User-Agent", UserAgent)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for key, value := range spec.Headers {
+		req.Header.Set(key, value)
+	}
+
+	// Execute request
+	resp, err := preClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pre-request execution failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read pre-request response: %w", err)
+	}
+
+	// Extract values based on response type
+	extractedValues := make(map[string]string)
+
+	if spec.ResponseType == "json" {
+		var data map[string]interface{}
+		if err := json.Unmarshal(bodyBytes, &data); err != nil {
+			return nil, nil, fmt.Errorf("failed to parse JSON pre-request response: %w", err)
+		}
+
+		for fieldName, jsonPath := range spec.ExtractFields {
+			value := getJSONValue(data, jsonPath)
+			extractedValues[fieldName] = value
+			log.WithFields(log.Fields{
+				"field": fieldName,
+				"value": value,
+				"path":  jsonPath,
+			}).Debug("Extracted value from JSON")
+		}
+	} else if spec.ResponseType == "html" {
+		doc, err := goquery.NewDocumentFromReader(bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse HTML pre-request response: %w", err)
+		}
+
+		for fieldName, selector := range spec.ExtractFields {
+			// Try multiple extraction methods
+			value := doc.Find(selector).AttrOr("value", "")
+			if value == "" {
+				value = doc.Find(selector).AttrOr("action", "")
+			}
+			if value == "" {
+				value = doc.Find(selector).Text()
+			}
+
+			extractedValues[fieldName] = strings.TrimSpace(value)
+			log.WithFields(log.Fields{
+				"field":    fieldName,
+				"value":    value,
+				"selector": selector,
+			}).Debug("Extracted value from HTML")
+		}
+	}
+
+	log.WithFields(log.Fields{
+		"extracted_count": len(extractedValues),
+		"has_cookies":     spec.UseCookies,
+	}).Debug("Pre-request completed")
+
+	// NEW: Execute follow-up request if specified (for multi-step logins like Vipr)
+	if spec.FollowUpRequest != nil {
+		log.Debug("Executing follow-up pre-request")
+
+		// Execute follow-up using same client (preserves cookies)
+		followUpValues, followUpClient, err := executeFollowUpRequest(ctx, spec.FollowUpRequest, service, preClient)
+		if err != nil {
+			return nil, nil, fmt.Errorf("follow-up request failed: %w", err)
+		}
+
+		// Merge extracted values (follow-up values override initial values)
+		for k, v := range followUpValues {
+			extractedValues[k] = v
+		}
+
+		// Use follow-up client if it has cookies, otherwise keep original
+		if spec.FollowUpRequest.UseCookies && followUpClient != nil {
+			preClient = followUpClient
+		}
+	}
+
+	return extractedValues, preClient, nil
+}
+
+// executeFollowUpRequest handles follow-up pre-requests using an existing client
+func executeFollowUpRequest(ctx context.Context, spec *PreRequestSpec, service string, existingClient *http.Client) (map[string]string, *http.Client, error) {
+	log.WithFields(log.Fields{
+		"action":  spec.Action,
+		"url":     spec.URL,
+		"service": service,
+	}).Debug("Executing follow-up pre-request")
+
+	// Use existing client to preserve cookies, or create new one
+	reqClient := existingClient
+	if reqClient == nil {
+		if spec.UseCookies {
+			jar, _ := cookiejar.New(nil)
+			reqClient = &http.Client{
+				Timeout: 60 * time.Second,
+				Jar:     jar,
+				Transport: &http.Transport{
+					MaxIdleConnsPerHost:   10,
+					ResponseHeaderTimeout: 30 * time.Second,
+				},
+			}
+		} else {
+			reqClient = client
+		}
+	}
+
+	// Build request body
+	var reqBody io.Reader
+	contentType := ""
+
+	if len(spec.FormFields) > 0 {
+		formData := url.Values{}
+		for key, value := range spec.FormFields {
+			formData.Set(key, value)
+		}
+		reqBody = strings.NewReader(formData.Encode())
+		contentType = "application/x-www-form-urlencoded"
+	}
+
+	// Create request
+	req, err := http.NewRequestWithContext(ctx, spec.Method, spec.URL, reqBody)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create follow-up request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("User-Agent", UserAgent)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for key, value := range spec.Headers {
+		req.Header.Set(key, value)
+	}
+
+	// Execute request
+	resp, err := reqClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("follow-up request execution failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read follow-up response: %w", err)
+	}
+
+	// Extract values based on response type
+	extractedValues := make(map[string]string)
+
+	if spec.ResponseType == "json" {
+		var data map[string]interface{}
+		if err := json.Unmarshal(bodyBytes, &data); err != nil {
+			return nil, nil, fmt.Errorf("failed to parse JSON follow-up response: %w", err)
+		}
+
+		for fieldName, jsonPath := range spec.ExtractFields {
+			value := getJSONValue(data, jsonPath)
+			extractedValues[fieldName] = value
+			log.WithFields(log.Fields{
+				"field": fieldName,
+				"value": value,
+				"path":  jsonPath,
+			}).Debug("Extracted value from JSON (follow-up)")
+		}
+	} else if spec.ResponseType == "html" {
+		doc, err := goquery.NewDocumentFromReader(bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse HTML follow-up response: %w", err)
+		}
+
+		for fieldName, selector := range spec.ExtractFields {
+			// Try multiple extraction methods
+			value := doc.Find(selector).AttrOr("value", "")
+			if value == "" {
+				value = doc.Find(selector).AttrOr("action", "")
+			}
+			if value == "" {
+				value = doc.Find(selector).Text()
+			}
+
+			extractedValues[fieldName] = strings.TrimSpace(value)
+			log.WithFields(log.Fields{
+				"field":    fieldName,
+				"value":    value,
+				"selector": selector,
+			}).Debug("Extracted value from HTML (follow-up)")
+		}
+	}
+
+	// Recursively handle nested follow-ups (though typically not needed)
+	if spec.FollowUpRequest != nil {
+		nestedValues, nestedClient, err := executeFollowUpRequest(ctx, spec.FollowUpRequest, service, reqClient)
+		if err != nil {
+			return nil, nil, err
+		}
+		for k, v := range nestedValues {
+			extractedValues[k] = v
+		}
+		if nestedClient != nil {
+			reqClient = nestedClient
+		}
+	}
+
+	log.WithFields(log.Fields{
+		"extracted_count": len(extractedValues),
+	}).Debug("Follow-up pre-request completed")
+
+	return extractedValues, reqClient, nil
 }
 
 // parseHttpResponse parses the upload response based on the parser spec
