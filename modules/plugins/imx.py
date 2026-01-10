@@ -176,7 +176,10 @@ class ImxPlugin(ImageHostPlugin):
         """
         # Map thumbnail size to IMX API ID
         size_map = {"100": "1", "150": "6", "180": "2", "250": "3", "300": "4"}
-        thumb_size = size_map.get(config.get("thumbnail_size", "180"), "2")
+        # Convert to string in case UI passes integer
+        thumb_size_value = str(config.get("thumbnail_size", "180"))
+        thumb_size = size_map.get(thumb_size_value, "2")
+        logger.debug(f"IMX thumbnail config: size={thumb_size_value} → ID={thumb_size}")
 
         # Map thumbnail format to IMX API ID
         format_map = {
@@ -185,7 +188,8 @@ class ImxPlugin(ImageHostPlugin):
             "Proportional": "2",
             "Square": "3"
         }
-        thumb_format = format_map.get(config.get("thumbnail_format", "Fixed Width"), "1")
+        thumb_format_value = str(config.get("thumbnail_format", "Fixed Width"))
+        thumb_format = format_map.get(thumb_format_value, "1")
 
         # Build multipart fields
         multipart_fields = {
